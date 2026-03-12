@@ -16,7 +16,7 @@
 脚本在覆写阶段做四件事：
 
 1. **注入家宽IP代理节点**——自选跳板（机场线路中转）和官方中转，两种模式可选
-2. **覆写 DNS**——fake-ip 模式，域外 AI / 微软 / 流媒体走域外 DoH（Google、Cloudflare），Apple / 域内 AI 走域内 DoH（阿里、腾讯）
+2. **覆写 DNS**——fake-ip 模式，域外 AI / Office 相关域名 / 流媒体走域外 DoH（Google、Cloudflare），Apple / 域内 AI 走域内 DoH（阿里、腾讯）
 3. **覆写域名嗅探（Sniffer）**——TLS（443/8443）、HTTP（80/8080/8880）、QUIC（443）三协议嗅探，还原 fake-ip 下的真实域名，让规则精确命中
 4. **注入路由规则（置顶）**——域外 AI、微软开发工具走链式代理；社交与流媒体锁区；域内 AI 直连
 
@@ -40,7 +40,7 @@
 
 打开 Clash Party →「配置」→ 粘贴订阅链接 → 导入。
 
-导入的节点就是链式代理的「跳板」。脚本会按地区（如新加坡、美国）自动筛选，不用手动挑。
+导入的节点就是链式代理的「跳板」。脚本会按地区（如新加坡、美国）自动筛选；如果订阅里已经有可复用的地区代理组，会优先直接复用，否则再按地区节点自动生成。
 
 ### 2. 创建凭证文件
 
@@ -97,14 +97,14 @@ var USER_OPTIONS = {
 
 1. 两个覆写脚本的开关都打开
 2. 切换到机场配置，启动代理
-3. 进入「代理组」，确认生成了以下四个组：
+3. 进入「代理组」，确认以下角色已经到位：
 
 ![Clash Party 代理组页面](img/Clash%20Party%20代理组.png)
 
 ① **节点选择**——默认「自动选择」，优先分配延迟最低的节点（如 HK），用于常规域外流量
-② **🇸🇬|新加坡线路-链式代理-跳板**——从新加坡节点中自动选延迟最低的一个，作为链式代理的第一跳
+② **新加坡跳板组**——如果订阅里已有可复用的新加坡地区代理组，脚本会直接复用；否则会生成 **`🇸🇬|新加坡线路-链式代理-跳板`**
 ③ **🇸🇬|新加坡-链式代理-家宽IP出口**——静态家宽 IP 出口，链式代理的第二跳——域外 AI 服务的流量最终从这里出去
-④ **🇺🇸|美国线路-流媒体**——从美区节点中自动选延迟最低的一个，社交媒体和流媒体锁定在这个区域
+④ **美国流媒体组**——如果订阅里已有可复用的美国地区代理组，脚本会直接复用；否则会生成 **`🇺🇸|美国线路-流媒体`**
 
 4. 验证是否生效：
    - [ping0.cc](https://ping0.cc/) 或 [ipinfo.io](https://ipinfo.io/)——应显示家宽住宅 IP，不是机房 IP
@@ -115,11 +115,11 @@ var USER_OPTIONS = {
 ## 域名分流一览
 
 - **域外 AI + 开发工具** → 链式代理（家宽IP出口）：Claude、ChatGPT、Gemini、Antigravity、Perplexity、OpenRouter、GitHub、VS Code、Office 365
-- **社交媒体与流媒体** → 锁区节点：YouTube、Netflix、Google、X / Twitter、Facebook / Instagram、Telegram、Discord
-- **域内 AI** → 直连：通义千问、Kimi、智谱、MiniMax 等
+- **社交媒体与流媒体** → 锁区节点：YouTube、Netflix、X / Twitter、Facebook / Instagram、Telegram、Discord
+- **域内 AI** → 直连：通义千问、智谱、ChatGLM、SiliconFlow 等网络边界较明确的域名
 - **出口测试** → 链式代理（家宽IP出口）：ping0.cc、ipinfo.io
 
-> 微软域名（Office 365、VS Code 等）走链式代理，是为了确保 Claude in Excel / PowerPoint 等插件在同一 IP 出口下正常工作。
+> 微软域名只覆盖 Office / VS Code / 鉴权相关范围，不再把整棵 Microsoft / Live 家族全部纳入链式代理。
 
 ---
 
