@@ -13,8 +13,6 @@
                   ↑ dialer-proxy           ↑ HTTP 代理
 ```
 
-基于 [Mihomo](https://github.com/MetaCubeX/mihomo) 内核，运行于 [Clash Party](https://github.com/mihomo-party-org/clash-party)。
-
 脚本在覆写阶段做四件事：
 
 1. **注入家宽IP代理节点**——自选跳板（机场线路中转）和官方中转，两种模式可选
