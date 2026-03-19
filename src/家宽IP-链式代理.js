@@ -103,9 +103,19 @@ var DOMAINS_APPLE = {
   services: ["+.apple-cloudkit.com"],
 };
 
-// 收窄后的 Microsoft 办公、鉴权和开发工具域名。
+// 需要统一走链式代理的 Google 家族域名。
+var DOMAINS_GOOGLE = {
+  core: ["+.google.com", "+.googleapis.com", "+.googleusercontent.com"],
+  static: ["+.gstatic.com", "+.ggpht.com", "+.gvt1.com", "+.gvt2.com"],
+  workspace: ["+.withgoogle.com", "+.googleworkspace.com"],
+  cloud: ["+.cloud.google.com"],
+};
+
+// 需要统一走链式代理的 Microsoft 家族域名。
 var DOMAINS_MICROSOFT = {
+  core: ["+.microsoft.com", "+.live.com", "+.windows.net"],
   office: ["+.office.com", "+.office.net", "+.office365.com"],
+  workspace: ["+.sharepoint.com", "+.onenote.com", "+.onedrive.com"],
   auth: [
     "+.microsoftonline.com",
     "+.msftauth.net",
@@ -171,6 +181,33 @@ var US_AI_PROCESS_NAMES_MACOS = [
   "Windsurf Helper",
   "Codeium",
   "Codeium Helper",
+];
+
+// 需要统一走链式代理的 macOS Google / Microsoft App / 进程名。
+var CHAIN_PROXY_PROCESS_NAMES_MACOS = [
+  "Google Chrome",
+  "Google Chrome Helper",
+  "Google Chrome Helper (GPU)",
+  "Google Chrome Helper (Plugin)",
+  "Google Chrome Helper (Renderer)",
+  "Google Drive",
+  "Google Drive Helper",
+  "Google Chrome for Testing",
+  "Microsoft Edge",
+  "Microsoft Edge Helper",
+  "Microsoft Edge Helper (GPU)",
+  "Microsoft Edge Helper (Plugin)",
+  "Microsoft Edge Helper (Renderer)",
+  "Microsoft Teams",
+  "Microsoft Teams Helper",
+  "Microsoft Outlook",
+  "Microsoft Word",
+  "Microsoft Excel",
+  "Microsoft PowerPoint",
+  "OneDrive",
+  "Visual Studio Code",
+  "Code",
+  "Code Helper",
 ];
 
 // 需要按地区锁区处理的流媒体和域外社交域名。
@@ -257,6 +294,9 @@ function flattenGroupedDomains(groupedDomains) {
 
 // 展平后的 Apple 域名列表，供 DNS 和规则注入复用。
 var ALL_APPLE_DOMAINS = flattenGroupedDomains(DOMAINS_APPLE);
+
+// 展平后的 Google 家族域名列表，供 DNS 和规则注入复用。
+var ALL_GOOGLE_DOMAINS = flattenGroupedDomains(DOMAINS_GOOGLE);
 
 // 展平后的 Microsoft 域名列表，供 DNS 和规则注入复用。
 var ALL_MICROSOFT_DOMAINS = flattenGroupedDomains(DOMAINS_MICROSOFT);
@@ -351,10 +391,10 @@ function assignNameserverPolicyDomains(policy, domains, dohServers) {
 function buildNameserverPolicy() {
   var policy = {
     "geosite:openai": DOH_OVERSEAS,
-    "+.cloud.google.com": DOH_OVERSEAS,
   };
 
-  // 微软走域外 DoH，Apple 走域内 DoH。
+  // Google / Microsoft 走域外 DoH，Apple 走域内 DoH。
+  assignNameserverPolicyDomains(policy, ALL_GOOGLE_DOMAINS, DOH_OVERSEAS);
   assignNameserverPolicyDomains(policy, ALL_MICROSOFT_DOMAINS, DOH_OVERSEAS);
   assignNameserverPolicyDomains(policy, ALL_APPLE_DOMAINS, DOH_DOMESTIC);
 
@@ -852,10 +892,22 @@ function buildUsAiProcessRules(chainGroupName) {
   return ruleLines;
 }
 
-// 生成微软和开发工具的通用链式代理规则。
+// 生成 Google / Microsoft 家族与开发工具的通用链式代理规则。
 function buildGeneralChainProxyRules(chainGroupName) {
   var ruleLines = [];
   var seenRuleIdentities = {};
+  addProcessRulesIfNotExists(
+    ruleLines,
+    seenRuleIdentities,
+    CHAIN_PROXY_PROCESS_NAMES_MACOS,
+    chainGroupName,
+  );
+  addSuffixRulesIfNotExists(
+    ruleLines,
+    seenRuleIdentities,
+    ALL_GOOGLE_DOMAINS,
+    chainGroupName,
+  );
   addSuffixRulesIfNotExists(
     ruleLines,
     seenRuleIdentities,
