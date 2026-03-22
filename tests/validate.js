@@ -12,7 +12,7 @@ const TEST_MIYA_CREDENTIALS = {
   relay: { server: "1.2.3.4", port: 8000 },
   transit: { server: "transit.example.com", port: 8001 }
 };
-const BROWSER_APPS = ["Comet", "Dia", "Atlas", "Google Chrome", "SunBrowser"];
+const BROWSER_APPS = ["Dia", "Atlas", "Google Chrome", "SunBrowser"];
 const BROWSER_HELPER_SUFFIXES = [
   "Helper",
   "Helper (Renderer)",
@@ -51,6 +51,8 @@ const EXPECTED = {
     "PROCESS-NAME,Perplexity Helper,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Cursor,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Cursor Helper,🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,Antigravity.app,🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,Quotio.app,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,claude,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,gemini,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,codex,🇸🇬|新加坡-链式代理-家宽IP出口"
@@ -296,6 +298,8 @@ function assertCoreStrictRouting(output) {
     "DOMAIN-SUFFIX,google.com," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Claude," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,Antigravity.app," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,Quotio.app," + EXPECTED.chainGroupName,
     "PROCESS-NAME,claude," + EXPECTED.chainGroupName,
     "PROCESS-NAME,codex," + EXPECTED.chainGroupName
   ]);

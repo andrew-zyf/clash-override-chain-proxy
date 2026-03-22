@@ -22,7 +22,7 @@
  * - 使用 ES5 语法，不依赖箭头函数、解构赋值、模板字符串、
  *   展开语法、`Object.values()`、`Object.fromEntries()` 等 ES6+ 特性。
  *
- * @version 8.7
+ * @version 8.9
  */
 
 // ---------------------------------------------------------------------------
@@ -325,20 +325,26 @@ var SOURCE_PATTERNS = {
 // 这一层只放原始进程分类，当前只保留 AI 与浏览器两类。
 var SOURCE_PROCESSES = {
   chain: {
-    aiApps: [
-      "Claude",
-      "Claude Helper",
-      "ChatGPT",
-      "ChatGPT Helper",
-      "Perplexity",
-      "Perplexity Helper",
-      "Cursor",
-      "Cursor Helper"
-    ],
+    aiApps: {
+      apps: [
+        "Claude",
+        "ChatGPT",
+        "Perplexity",
+        "Cursor"
+      ],
+      helperSuffixes: [
+        "Helper"
+      ],
+      exact: [
+        "Antigravity.app",
+        "Quotio.app",
+        // "CC Switch.app"
+      ]
+    },
     aiCli: ["claude", "gemini", "codex"],
     browser: {
       apps: [
-        "Comet",
+        // "Comet",
         "Dia",
         "Atlas",
         "Google Chrome",
@@ -392,19 +398,21 @@ function mergeStringGroups(groups) {
   return uniqueStrings(mergedValues);
 }
 
-// 为 Chromium 类浏览器展开主进程及显式 helper 进程名。
-function expandBrowserProcessNames(browserAppNames, helperSuffixes) {
+// 为应用展开主进程、显式 helper，以及精确进程名。
+function expandProcessNamesWithHelpers(appNames, helperSuffixes, exactProcessNames) {
   var processNames = [];
   var i;
   var j;
+  var exactNames = exactProcessNames || [];
 
-  for (i = 0; i < browserAppNames.length; i++) {
-    processNames.push(browserAppNames[i]);
+  for (i = 0; i < appNames.length; i++) {
+    processNames.push(appNames[i]);
     for (j = 0; j < helperSuffixes.length; j++) {
-      processNames.push(browserAppNames[i] + " " + helperSuffixes[j]);
+      processNames.push(appNames[i] + " " + helperSuffixes[j]);
     }
   }
 
+  processNames.push.apply(processNames, exactNames);
   return uniqueStrings(processNames);
 }
 
@@ -526,11 +534,15 @@ function buildDerivedPatterns() {
 function buildDerivedProcessNames() {
   var processNames = {
     ai: {
-      apps: uniqueStrings(SOURCE_PROCESSES.chain.aiApps.slice()),
+      apps: expandProcessNamesWithHelpers(
+        SOURCE_PROCESSES.chain.aiApps.apps,
+        SOURCE_PROCESSES.chain.aiApps.helperSuffixes,
+        SOURCE_PROCESSES.chain.aiApps.exact
+      ),
       cli: uniqueStrings(SOURCE_PROCESSES.chain.aiCli.slice())
     },
     browser: {
-      all: expandBrowserProcessNames(
+      all: expandProcessNamesWithHelpers(
         SOURCE_PROCESSES.chain.browser.apps,
         SOURCE_PROCESSES.chain.browser.helperSuffixes
       )
