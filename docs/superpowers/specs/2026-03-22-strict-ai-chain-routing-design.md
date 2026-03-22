@@ -179,6 +179,22 @@ The repository must prefer a visible failure over an invisible routing mistake.
 - Local-network and router-management domains
 - Time sync and local-network support domains already excluded from fake-ip
 
+### Conflict precedence
+
+If an object is ever classified into both a strict set and a direct-only set,
+direct-only classification wins.
+
+This rule applies consistently to:
+
+- canonical object assembly
+- DNS generation
+- Sniffer generation
+- process and domain rule generation
+- regression tests
+
+The implementation plan must treat this as an invariant rather than an
+accidental byproduct of rule ordering.
+
 ## Proposed Internal Structure
 
 The implementation should remain a single Clash Party script for now, but its
@@ -268,10 +284,18 @@ When `strictAiRouting` is `true`, the script must enforce the full strict path:
 - dedicated strict AI proxy group targeting
 - fail-closed validation
 
-When `strictAiRouting` is `false`, implementation planning should define a
-clearly weaker routing mode rather than silently preserving strict behavior under
-the same name. The plan must state exactly which guarantees are removed in that
-mode.
+When `strictAiRouting` is `false`, the script enters an explicit compatibility
+mode with a weaker contract:
+
+- AI-related traffic may still be routed by managed process and domain rules
+- the dedicated strict AI proxy group is not required
+- fail-closed validation for strict-path construction is not required
+- the repository no longer guarantees that all managed AI/support traffic uses
+  only the selected chain exit
+
+This mode exists for user-controlled fallback behavior and backward
+compatibility, not as an implicit degradation path. The implementation must make
+the mode distinction obvious in code, tests, and documentation.
 
 ## Error Handling
 
@@ -285,7 +309,8 @@ Examples of failure classes:
 - strict AI group target mismatch
 - managed rules would leak into non-strict targets
 
-The script should not degrade to a weaker routing mode.
+When `strictAiRouting` is `true`, the script should not degrade to a weaker
+routing mode.
 
 ## Testing Strategy
 
@@ -308,6 +333,9 @@ Required assertions:
 6. Toggle isolation
    Process toggles only affect process rules and do not weaken DNS/Sniffer/domain
    enforcement for strict objects.
+7. Conflict precedence
+   Objects present in both strict and direct-only sets resolve to direct-only
+   behavior everywhere the canonical data source is consumed.
 
 ## Documentation Changes
 
