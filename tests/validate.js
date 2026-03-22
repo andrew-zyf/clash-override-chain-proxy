@@ -268,21 +268,11 @@ function testMissingRegionFails() {
   );
 }
 
-function testInvalidManualNodeFails() {
-  const sandbox = loadSandbox();
-  sandbox.USER_OPTIONS.manualNode = "不存在的节点";
-
-  assert.throws(
-    () => sandbox.main(createBaseConfig()),
-    /manualNode 未命中现有节点或代理组/
-  );
-}
-
 function testMissingStrictTargetFails() {
   const sandbox = loadSandbox();
   const originalResolveRoutingTargets = sandbox.resolveRoutingTargets;
-  sandbox.resolveRoutingTargets = function (config, region, manualNode) {
-    const routingTargets = originalResolveRoutingTargets(config, region, manualNode);
+  sandbox.resolveRoutingTargets = function (config, region) {
+    const routingTargets = originalResolveRoutingTargets(config, region);
     routingTargets.strictAiTarget = "错误目标";
     return routingTargets;
   };
@@ -299,7 +289,6 @@ testAiCliProcessProxyDefaultsOn();
 testDisableAiCliProcessProxy();
 testOnlyAiAndBrowserProcessesAreManaged();
 testMissingRegionFails();
-testInvalidManualNodeFails();
 testMissingStrictTargetFails();
 
 console.log("validate.js: all checks passed");

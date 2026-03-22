@@ -32,7 +32,6 @@
 // 这一层只放用户手动可改的入口参数。
 var USER_OPTIONS = {
   chainRegion: "SG", // 通用链式代理中转地区，可选 US / JP / HK / SG
-  manualNode: "", // 手动指定跳板节点名，留空则自动匹配
   enableBrowserProcessProxy: false, // 是否纳入浏览器主进程和 helper
   enableAiCliProcessProxy: true // 是否纳入常见 AI CLI
 };
@@ -889,21 +888,8 @@ function ensureRegionGroup(config, region, groupNameSuffix, reuseExisting) {
 }
 
 // 解析家宽链式代理前一跳应使用的跳板节点或地区组。
-function resolveRelayTarget(config, region, manualNode) {
-  var relayTarget = null;
-  if (manualNode) {
-    relayTarget = manualNode;
-    if (!hasProxyOrGroup(config, relayTarget)) {
-      throw createUserError(
-        "manualNode 未命中现有节点或代理组: " +
-          relayTarget +
-          "，请改成 Clash Party 中实际存在的节点名或留空自动选择"
-      );
-    }
-    return relayTarget;
-  }
-
-  relayTarget = ensureRegionGroup(
+function resolveRelayTarget(config, region) {
+  var relayTarget = ensureRegionGroup(
     config,
     region,
     BASE.groupNameSuffixes.relay,
@@ -913,7 +899,7 @@ function resolveRelayTarget(config, region, manualNode) {
     throw createUserError(
       "未找到可用的 " +
         region +
-        " 跳板节点或代理组，请检查 chainRegion 是否与订阅地区一致，或显式填写 manualNode"
+        " 跳板节点或代理组，请检查 chainRegion 是否与订阅地区一致"
     );
   }
   return relayTarget;
@@ -951,8 +937,8 @@ function ensureChainGroup(config, region) {
 }
 
 // 统一解析本轮注入所需的关键目标，减少主流程里的状态分散。
-function resolveRoutingTargets(config, region, manualNode) {
-  var relayTarget = resolveRelayTarget(config, region, manualNode);
+function resolveRoutingTargets(config, region) {
+  var relayTarget = resolveRelayTarget(config, region);
   var chainGroupName = ensureChainGroup(config, region);
   return {
     relayTarget: relayTarget,
@@ -1220,7 +1206,7 @@ function assertManagedRuleTarget(ruleLines, type, value, target) {
   var ruleLine = type + "," + value + "," + target;
   if (ruleLines.indexOf(ruleLine) >= 0) return;
   throw createUserError(
-    "关键规则未正确写入: " + ruleLine + "，请检查 chainRegion、manualNode 和订阅代理组"
+    "关键规则未正确写入: " + ruleLine + "，请检查 chainRegion 和订阅代理组"
   );
 }
 
@@ -1278,8 +1264,7 @@ function main(config) {
 
   routingTargets = resolveRoutingTargets(
     config,
-    USER_OPTIONS.chainRegion,
-    USER_OPTIONS.manualNode
+    USER_OPTIONS.chainRegion
   ); // 解析链路目标
   applyManagedRouting(config, routingTargets); // 写入拨号与规则
   validateManagedRouting(config, routingTargets); // 校验关键目标
