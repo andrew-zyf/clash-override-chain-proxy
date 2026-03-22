@@ -8,5 +8,8 @@ src/MiyaIP 凭证.js
 # 本地子目录（文件已复制到根目录）
 公开/
 
+# 本地设计 / 计划草稿目录
+docs/superpowers/
+
 # macOS
 .DS_Store
