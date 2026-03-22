@@ -13,7 +13,7 @@
 ## 分流一览
 
 - **域外 AI 与支撑平台**：强制命中当前 `chainRegion` 的家宽出口，包括 Claude、ChatGPT、Gemini、NotebookLM、Perplexity，以及 Google、Microsoft、GitHub 等登录、下载、开发相关平台。
-- **按应用名强制分流的 AI 应用**：当前覆盖 `Claude`、`ChatGPT`、`Perplexity`、`Cursor`，以及 `Claude Code`、`Codex`、`Antigravity`、`Gemini CLI`。
+- **按应用名强制分流的 AI 应用**：当前覆盖 `Claude`、`ChatGPT`、`Perplexity`、`Cursor`，以及 `Claude Code`、`Codex`、`Gemini CLI`；`Antigravity` 当前走域名级强制分流。
 - **按应用名强制分流的浏览器**：可选进入普通链式代理，默认关闭；当前维护 `Comet`、`Dia`、`Atlas`、`Google Chrome` 及其明显 helper。
 - **社交与流媒体**：走普通链式代理，跟随 `chainRegion`。
 - **域内直连**：固定 `DIRECT`，包括域内 AI，以及腾讯、阿里、字节、WPS 的主力办公、沟通、协作域名。
@@ -105,7 +105,7 @@ node tests/validate.js
 ## 常见问题
 
 - **报错“缺少 `config._miya`”**：大多是覆写顺序不对。先确认 `MiyaIP 凭证.js` 在主脚本前面，而且文件里确实已经写入了凭证。
-- **报错找不到可用地区跳板**：说明当前 `chainRegion` 没有匹配到可复用节点。先检查你选的地区在订阅里是否真的存在，再看节点命名是否能被脚本识别。
+- **报错找不到可用地区跳板**：说明当前 `chainRegion` 没有匹配到可用地区节点。先检查你选的地区在订阅里是否真的存在，再看节点命名是否能被脚本识别。
 - **出口不符合预期**：先看凭证和中转信息，再看当前地区的家宽出口组有没有正确生成。大多数偏差都出在这两层。
 - **为什么会有域外应用直连**：这类对象本来就不适合走家宽链式代理，但解析又不能随便落到域内，所以会固定成 `DIRECT + 域外 DoH + skip-domain`。
 

@@ -53,7 +53,6 @@ var BASE = {
     relay: "自选节点 + 家宽IP",
     transit: "MiyaIP（官方中转）"
   },
-  excludedGroupNames: ["节点选择"],
   ruleTargets: {
     direct: "DIRECT"
   },
@@ -541,11 +540,23 @@ var DERIVED = {
 };
 
 // 校验目标单独成层，避免规则写入断言散落在函数内部。
-var VALIDATION_TARGETS = [
-  { type: "DOMAIN-SUFFIX", value: "claude.ai" },
-  { type: "DOMAIN-SUFFIX", value: "google.com" },
-  { type: "PROCESS-NAME", value: "Claude" }
-];
+function buildValidationTargets() {
+  var validationTargets = [
+    { type: "DOMAIN-SUFFIX", value: "claude.ai" },
+    { type: "DOMAIN-SUFFIX", value: "chatgpt.com" },
+    { type: "DOMAIN-SUFFIX", value: "gemini.google.com" },
+    { type: "DOMAIN-SUFFIX", value: "perplexity.ai" },
+    { type: "DOMAIN-SUFFIX", value: "google.com" },
+    { type: "PROCESS-NAME", value: "Claude" }
+  ];
+
+  if (USER_OPTIONS.enableAiCliProcessProxy) {
+    validationTargets.push({ type: "PROCESS-NAME", value: "claude" });
+    validationTargets.push({ type: "PROCESS-NAME", value: "codex" });
+  }
+
+  return validationTargets;
+}
 
 // ---------------------------------------------------------------------------
 // DNS + Sniffer
@@ -782,6 +793,22 @@ function findNamedItem(items, targetName) {
   return null;
 }
 
+// 在按 `name` 命名的数组项中查找条目下标。
+function findNamedItemIndex(items, targetName) {
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].name === targetName) return i;
+  }
+  return -1;
+}
+
+// 按名称更新或插入一个完整条目，避免沿用同名旧对象。
+function upsertNamedItem(items, itemDefinition) {
+  var itemIndex = findNamedItemIndex(items, itemDefinition.name);
+  if (itemIndex >= 0) items[itemIndex] = itemDefinition;
+  else items.push(itemDefinition);
+  return itemDefinition;
+}
+
 // 按名称查找单个代理节点。
 function findProxyByName(proxies, proxyName) {
   return findNamedItem(proxies, proxyName);
@@ -800,20 +827,6 @@ function hasProxyOrGroup(config, targetName) {
   );
 }
 
-// 查找可直接复用的订阅地区组名称。
-function findReusableRegionGroupName(proxyGroups, regionRegex) {
-  for (var i = 0; i < proxyGroups.length; i++) {
-    var proxyGroup = proxyGroups[i];
-    if (
-      regionRegex.test(proxyGroup.name) &&
-      BASE.excludedGroupNames.indexOf(proxyGroup.name) < 0
-    ) {
-      return proxyGroup.name;
-    }
-  }
-  return null;
-}
-
 // 收集匹配地区特征且非 MiyaIP 的节点名称列表。
 function collectRegionNodeNames(proxies, regionRegex) {
   var regionNodeNames = [];
@@ -829,9 +842,9 @@ function collectRegionNodeNames(proxies, regionRegex) {
   return regionNodeNames;
 }
 
-// 把地区节点列表包装成一个 `url-test` 代理组。
-function addRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames) {
-  proxyGroups.push({
+// 把地区节点列表包装成一个 `url-test` 代理组，并覆盖同名旧组。
+function upsertRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames) {
+  upsertNamedItem(proxyGroups, {
     name: groupName,
     type: "url-test",
     proxies: regionNodeNames,
@@ -853,15 +866,12 @@ function injectMiyaProxies(config, miyaCredentials) {
   ];
 
   for (var i = 0; i < miyaProxies.length; i++) {
-    var miyaProxy = miyaProxies[i];
-    if (!findProxyByName(config.proxies, miyaProxy.name)) {
-      config.proxies.push(miyaProxy);
-    }
+    upsertNamedItem(config.proxies, miyaProxies[i]);
   }
 }
 
-// 查找、复用或创建指定地区的 `url-test` 代理组。
-function ensureRegionGroup(config, region, groupNameSuffix, reuseExisting) {
+// 仅根据订阅节点创建或修正指定地区的 `url-test` 代理组。
+function ensureRegionGroup(config, region, groupNameSuffix) {
   var regionMeta = resolveRegionMeta(region, false);
   if (!regionMeta) return null;
 
@@ -869,37 +879,22 @@ function ensureRegionGroup(config, region, groupNameSuffix, reuseExisting) {
   var groupName = buildRegionGroupName(regionMeta, groupNameSuffix);
   var proxyGroups = config["proxy-groups"];
 
-  if (reuseExisting) {
-    var reusableGroupName = findReusableRegionGroupName(
-      proxyGroups,
-      regionRegex
-    );
-    if (reusableGroupName) return reusableGroupName;
-  } // 优先复用订阅里已有的地区代理组
-
-  if (findProxyGroupByName(proxyGroups, groupName)) return groupName; // 已存在同名组则直接复用
-
   var regionNodeNames = collectRegionNodeNames(config.proxies, regionRegex);
   if (regionNodeNames.length === 0) return null;
 
-  addRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames); // 用地区节点创建 url-test 组
+  upsertRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames); // 用地区节点创建或修正 url-test 组
 
   return groupName;
 }
 
-// 解析家宽链式代理前一跳应使用的跳板节点或地区组。
+// 解析家宽链式代理前一跳应使用的脚本跳板组。
 function resolveRelayTarget(config, region) {
-  var relayTarget = ensureRegionGroup(
-    config,
-    region,
-    BASE.groupNameSuffixes.relay,
-    true
-  );
+  var relayTarget = ensureRegionGroup(config, region, BASE.groupNameSuffixes.relay);
   if (!relayTarget) {
     throw createUserError(
       "未找到可用的 " +
         region +
-        " 跳板节点或代理组，请检查 chainRegion 是否与订阅地区一致"
+        " 节点，请检查 chainRegion 是否与订阅地区一致"
     );
   }
   return relayTarget;
@@ -925,13 +920,11 @@ function ensureChainGroup(config, region) {
     BASE.groupNameSuffixes.chain
   );
 
-  if (!findProxyGroupByName(config["proxy-groups"], chainGroupName)) {
-    config["proxy-groups"].push({
-      name: chainGroupName,
-      type: "select",
-      proxies: [BASE.nodeNames.transit, BASE.nodeNames.relay]
-    });
-  }
+  upsertNamedItem(config["proxy-groups"], {
+    name: chainGroupName,
+    type: "select",
+    proxies: [BASE.nodeNames.transit, BASE.nodeNames.relay]
+  });
 
   return chainGroupName;
 }
@@ -1210,21 +1203,70 @@ function assertManagedRuleTarget(ruleLines, type, value, target) {
   );
 }
 
+// 判断两个字符串数组是否完全一致，保留顺序敏感语义。
+function haveSameStrings(values, expectedValues) {
+  if (values.length !== expectedValues.length) return false;
+  for (var i = 0; i < values.length; i++) {
+    if (values[i] !== expectedValues[i]) return false;
+  }
+  return true;
+}
+
 // 验证关键 AI 规则目标，避免静默泄漏或错误地区回退。
 function validateManagedRouting(config, routingTargets) {
   var i;
+  var relayProxy;
+  var transitProxy;
+  var chainGroup;
+  var expectedChainMembers = [BASE.nodeNames.transit, BASE.nodeNames.relay];
+  var validationTargets = buildValidationTargets();
 
   if (routingTargets.strictAiTarget !== routingTargets.chainGroupName) {
     throw createUserError(
       "域外 AI 与支撑平台未直接指向当前 chainRegion 出口，请检查 chainRegion 或代理组注入逻辑"
     );
   }
+  if (routingTargets.relayTarget === routingTargets.chainGroupName) {
+    throw createUserError(
+      "当前 chainRegion 跳板错误复用了家宽出口组，请检查地区代理组复用逻辑"
+    );
+  }
+  if (!hasProxyOrGroup(config, routingTargets.relayTarget)) {
+    throw createUserError(
+      "当前 chainRegion 跳板不存在，请检查 chainRegion 和订阅代理组"
+    );
+  }
 
-  for (i = 0; i < VALIDATION_TARGETS.length; i++) {
+  relayProxy = findProxyByName(config.proxies, BASE.nodeNames.relay);
+  if (!relayProxy || relayProxy["dialer-proxy"] !== routingTargets.relayTarget) {
+    throw createUserError(
+      "家宽出口节点未正确绑定到当前 chainRegion 跳板，请检查代理链路注入逻辑"
+    );
+  }
+
+  transitProxy = findProxyByName(config.proxies, BASE.nodeNames.transit);
+  if (!transitProxy || transitProxy["dialer-proxy"]) {
+    throw createUserError(
+      "官方中转节点状态异常，请检查 MiyaIP 凭证.js 和节点注入逻辑"
+    );
+  }
+
+  chainGroup = findProxyGroupByName(config["proxy-groups"], routingTargets.chainGroupName);
+  if (
+    !chainGroup ||
+    chainGroup.type !== "select" ||
+    !haveSameStrings(chainGroup.proxies || [], expectedChainMembers)
+  ) {
+    throw createUserError(
+      "当前 chainRegion 的家宽出口组内容异常，请检查代理组注入逻辑"
+    );
+  }
+
+  for (i = 0; i < validationTargets.length; i++) {
     assertManagedRuleTarget(
       config.rules,
-      VALIDATION_TARGETS[i].type,
-      VALIDATION_TARGETS[i].value,
+      validationTargets[i].type,
+      validationTargets[i].value,
       routingTargets.strictAiTarget
     );
   }

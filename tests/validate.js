@@ -6,11 +6,23 @@ const vm = require("vm");
 const repoRoot = path.resolve(__dirname, "..");
 const scriptPath = path.join(repoRoot, "src", "家宽IP-链式代理.js");
 const scriptCode = fs.readFileSync(scriptPath, "utf8");
+const TEST_MIYA_CREDENTIALS = {
+  username: "user",
+  password: "pass",
+  relay: { server: "1.2.3.4", port: 8000 },
+  transit: { server: "transit.example.com", port: 8001 }
+};
 
 // 关键链路目标和受管规则前缀。
 const EXPECTED = {
   chainGroupName: "🇸🇬|新加坡-链式代理-家宽IP出口",
   relayGroupName: "🇸🇬|新加坡线路-链式代理-跳板",
+  managedNodes: {
+    relayName: "自选节点 + 家宽IP",
+    transitName: "MiyaIP（官方中转）",
+    relayMembers: ["🇸🇬 SG Auto 01"],
+    chainMembers: ["MiyaIP（官方中转）", "自选节点 + 家宽IP"]
+  },
   managedRulePrefix: [
     "PROCESS-NAME,Claude,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Claude Helper,🇸🇬|新加坡-链式代理-家宽IP出口",
@@ -100,10 +112,16 @@ function createBaseConfig() {
       "MATCH,节点选择"
     ],
     _miya: {
-      username: "user",
-      password: "pass",
-      relay: { server: "1.2.3.4", port: 8000 },
-      transit: { server: "transit.example.com", port: 8001 }
+      username: TEST_MIYA_CREDENTIALS.username,
+      password: TEST_MIYA_CREDENTIALS.password,
+      relay: {
+        server: TEST_MIYA_CREDENTIALS.relay.server,
+        port: TEST_MIYA_CREDENTIALS.relay.port
+      },
+      transit: {
+        server: TEST_MIYA_CREDENTIALS.transit.server,
+        port: TEST_MIYA_CREDENTIALS.transit.port
+      }
     }
   };
 }
@@ -178,9 +196,16 @@ function findGroup(output, groupName) {
   return output["proxy-groups"].find((group) => group.name === groupName);
 }
 
+function findProxy(output, proxyName) {
+  return output.proxies.find((proxy) => proxy.name === proxyName);
+}
+
 function assertNameserverPolicyValues(output, domains, expectedValue) {
   for (const domain of domains) {
-    assert.deepStrictEqual(output.dns["nameserver-policy"][domain], expectedValue);
+    assert.strictEqual(
+      JSON.stringify(output.dns["nameserver-policy"][domain]),
+      JSON.stringify(expectedValue)
+    );
   }
 }
 
@@ -202,14 +227,58 @@ function assertArrayExcludesAll(values, excludedValues, label) {
   }
 }
 
+// MiyaIP 节点、跳板组和家宽出口组都应收敛成脚本期望结构。
+function assertManagedProxyTopology(output, expectedRelayTarget) {
+  const relayProxy = findProxy(output, EXPECTED.managedNodes.relayName);
+  const transitProxy = findProxy(output, EXPECTED.managedNodes.transitName);
+  const relayGroup = findGroup(output, EXPECTED.relayGroupName);
+  const chainGroup = findGroup(output, EXPECTED.chainGroupName);
+
+  assert(relayProxy, "Expected relay proxy to exist");
+  assert.strictEqual(relayProxy.type, "http");
+  assert.strictEqual(relayProxy.server, TEST_MIYA_CREDENTIALS.relay.server);
+  assert.strictEqual(relayProxy.port, TEST_MIYA_CREDENTIALS.relay.port);
+  assert.strictEqual(relayProxy.username, TEST_MIYA_CREDENTIALS.username);
+  assert.strictEqual(relayProxy.password, TEST_MIYA_CREDENTIALS.password);
+  assert.strictEqual(relayProxy.udp, true);
+  assert.strictEqual(relayProxy["dialer-proxy"], expectedRelayTarget);
+
+  assert(transitProxy, "Expected transit proxy to exist");
+  assert.strictEqual(transitProxy.type, "http");
+  assert.strictEqual(transitProxy.server, TEST_MIYA_CREDENTIALS.transit.server);
+  assert.strictEqual(transitProxy.port, TEST_MIYA_CREDENTIALS.transit.port);
+  assert.strictEqual(transitProxy.username, TEST_MIYA_CREDENTIALS.username);
+  assert.strictEqual(transitProxy.password, TEST_MIYA_CREDENTIALS.password);
+  assert.strictEqual(transitProxy.udp, true);
+  assert.strictEqual(transitProxy["dialer-proxy"], undefined);
+
+  assert(relayGroup, "Expected relay group to exist");
+  assert.strictEqual(relayGroup.type, "url-test");
+  assert.strictEqual(
+    JSON.stringify(relayGroup.proxies),
+    JSON.stringify(EXPECTED.managedNodes.relayMembers)
+  );
+
+  assert(chainGroup, "Expected chain group to exist");
+  assert.strictEqual(chainGroup.type, "select");
+  assert.strictEqual(
+    JSON.stringify(chainGroup.proxies),
+    JSON.stringify(EXPECTED.managedNodes.chainMembers)
+  );
+}
+
 // 严格链式路由必须覆盖域外 AI 主域和受管 AI 进程。
 function assertCoreStrictRouting(output) {
   assertRulesExist(output.rules, [
     "DOMAIN-SUFFIX,claude.ai," + EXPECTED.chainGroupName,
+    "DOMAIN-SUFFIX,chatgpt.com," + EXPECTED.chainGroupName,
+    "DOMAIN-SUFFIX,gemini.google.com," + EXPECTED.chainGroupName,
+    "DOMAIN-SUFFIX,perplexity.ai," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,google.com," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Claude," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,claude," + EXPECTED.chainGroupName
+    "PROCESS-NAME,claude," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,codex," + EXPECTED.chainGroupName
   ]);
   assertRulesMissing(output.rules, [
     "PROCESS-NAME,Comet," + EXPECTED.chainGroupName,
@@ -294,11 +363,7 @@ function testDefaultConfig() {
 
   assert.strictEqual(sandbox.USER_OPTIONS.enableBrowserProcessProxy, false);
   assert.strictEqual(output._miya, undefined);
-  assert.strictEqual(
-    output.proxies.find((proxy) => proxy.name === "自选节点 + 家宽IP")["dialer-proxy"],
-    EXPECTED.relayGroupName
-  );
-  assert(findGroup(output, EXPECTED.chainGroupName), "Expected chain group to exist");
+  assertManagedProxyTopology(output, EXPECTED.relayGroupName);
 
   assertCoreStrictRouting(output);
   assertDomesticDirectCoverage(output, sandbox);
@@ -386,7 +451,7 @@ function testMissingRegionFails() {
     function () {
       sandbox.main(config);
     },
-    /未找到可用的 US 跳板节点或代理组/
+    /未找到可用的 US 节点/
   );
 }
 
@@ -407,6 +472,98 @@ function testMissingStrictTargetFails() {
   );
 }
 
+function testExistingManagedObjectsAreReconciled() {
+  const output = runMain(function (config) {
+    config.proxies.push({
+      name: EXPECTED.managedNodes.relayName,
+      type: "http",
+      server: "bad.example.com",
+      port: 1,
+      username: "bad",
+      password: "bad",
+      udp: false,
+      "dialer-proxy": "错误目标"
+    });
+    config.proxies.push({
+      name: EXPECTED.managedNodes.transitName,
+      type: "http",
+      server: "bad-transit.example.com",
+      port: 2,
+      username: "bad",
+      password: "bad",
+      udp: false,
+      "dialer-proxy": "错误目标"
+    });
+    config["proxy-groups"].push({
+      name: EXPECTED.relayGroupName,
+      type: "select",
+      proxies: [EXPECTED.chainGroupName]
+    });
+    config["proxy-groups"].push({
+      name: EXPECTED.chainGroupName,
+      type: "select",
+      proxies: ["DIRECT"]
+    });
+  }).output;
+
+  assertManagedProxyTopology(output, EXPECTED.relayGroupName);
+}
+
+function testChainGroupIsNotReusedAsRelayTarget() {
+  const output = runMain(function (config) {
+    config["proxy-groups"].push({
+      name: EXPECTED.chainGroupName,
+      type: "select",
+      proxies: EXPECTED.managedNodes.chainMembers.slice()
+    });
+  }).output;
+
+  assertManagedProxyTopology(output, EXPECTED.relayGroupName);
+}
+
+function testBadExternalRegionGroupIsNotReused() {
+  const output = runMain(function (config) {
+    config["proxy-groups"].push({
+      name: "🇸🇬 错误地区组",
+      type: "select",
+      proxies: ["DIRECT"]
+    });
+  }).output;
+
+  assertManagedProxyTopology(output, EXPECTED.relayGroupName);
+}
+
+function testRepeatedRunDoesNotCreateSelfReference() {
+  const firstOutput = runMain().output;
+  const rerunInput = JSON.parse(JSON.stringify(firstOutput));
+  const sandbox = loadSandbox();
+
+  rerunInput._miya = {
+    username: TEST_MIYA_CREDENTIALS.username,
+    password: TEST_MIYA_CREDENTIALS.password,
+    relay: {
+      server: TEST_MIYA_CREDENTIALS.relay.server,
+      port: TEST_MIYA_CREDENTIALS.relay.port
+    },
+    transit: {
+      server: TEST_MIYA_CREDENTIALS.transit.server,
+      port: TEST_MIYA_CREDENTIALS.transit.port
+    }
+  };
+
+  const secondOutput = sandbox.main(rerunInput);
+
+  assertManagedProxyTopology(secondOutput, EXPECTED.relayGroupName);
+  assert.strictEqual(
+    secondOutput["proxy-groups"].filter((group) => group.name === EXPECTED.chainGroupName).length,
+    1
+  );
+  assert.strictEqual(
+    secondOutput["proxy-groups"].filter((group) => group.name === EXPECTED.relayGroupName).length,
+    1
+  );
+}
+
 testDefaultConfig();
 testEnableBrowserProcessProxy();
 testAiCliProcessProxyDefaultsOn();
@@ -414,5 +571,9 @@ testDisableAiCliProcessProxy();
 testOnlyAiAndBrowserProcessesAreManaged();
 testMissingRegionFails();
 testMissingStrictTargetFails();
+testExistingManagedObjectsAreReconciled();
+testChainGroupIsNotReusedAsRelayTarget();
+testBadExternalRegionGroupIsNotReused();
+testRepeatedRunDoesNotCreateSelfReference();
 
 console.log("validate.js: all checks passed");
