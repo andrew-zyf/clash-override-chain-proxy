@@ -245,9 +245,11 @@ The design keeps the existing user-facing model with limited adjustments.
 - `chainRegion`
 - `manualNode`
 - `enableAiCliProcessProxy`
+- `strictAiRouting`
 
 ### Change
 
+- `strictAiRouting` should be a user-visible config switch and should default to `true`
 - `enableBrowserProcessProxy` should default to `false`
 
 Reason:
@@ -256,13 +258,20 @@ AI and related support services. Full-browser process capture should remain
 optional because it widens the trust boundary and adds traffic unrelated to the
 account continuity problem.
 
-### Consider adding
+`strictAiRouting` should not remain an internal-only concept. It should be
+explicit in the user-facing configuration so the repository's routing contract is
+visible, inspectable, and intentionally controlled by the user.
 
-- `strictAiRouting: true`
+When `strictAiRouting` is `true`, the script must enforce the full strict path:
 
-This is optional from a syntax perspective, but the concept should exist even if
-the implementation chooses to keep strict behavior as the only mode for now. A
-named switch can clarify intent in code and tests.
+- DNS and Sniffer strict object enforcement
+- dedicated strict AI proxy group targeting
+- fail-closed validation
+
+When `strictAiRouting` is `false`, implementation planning should define a
+clearly weaker routing mode rather than silently preserving strict behavior under
+the same name. The plan must state exactly which guarantees are removed in that
+mode.
 
 ## Error Handling
 
