@@ -16,7 +16,7 @@ const TEST_MIYA_CREDENTIALS = {
 // 关键链路目标和受管规则前缀。
 const EXPECTED = {
   chainGroupName: "🇸🇬|新加坡-链式代理-家宽IP出口",
-  relayGroupName: "🇸🇬|新加坡线路-链式代理-跳板",
+  relayGroupName: "🇸🇬|新加坡-链式代理-跳板",
   managedNodes: {
     relayName: "自选节点 + 家宽IP",
     transitName: "MiyaIP（官方中转）",
@@ -281,7 +281,6 @@ function assertCoreStrictRouting(output) {
     "PROCESS-NAME,codex," + EXPECTED.chainGroupName
   ]);
   assertRulesMissing(output.rules, [
-    "PROCESS-NAME,Comet," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,claude.ai,DIRECT"
   ]);
 }
@@ -361,11 +360,23 @@ function testDefaultConfig() {
   const sandbox = result.sandbox;
   const output = result.output;
 
-  assert.strictEqual(sandbox.USER_OPTIONS.enableBrowserProcessProxy, false);
+  assert.strictEqual(sandbox.USER_OPTIONS.enableBrowserProcessProxy, true);
   assert.strictEqual(output._miya, undefined);
   assertManagedProxyTopology(output, EXPECTED.relayGroupName);
 
   assertCoreStrictRouting(output);
+  assertProcessRules(
+    output,
+    true,
+    EXPECTED.process.browserManaged,
+    EXPECTED.chainGroupName
+  );
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.browserExcluded,
+    EXPECTED.chainGroupName
+  );
   assertDomesticDirectCoverage(output, sandbox);
   assertOverseasAppDirectCoverage(output, sandbox);
   assertDnsAndSniffer(output, sandbox);
@@ -373,14 +384,14 @@ function testDefaultConfig() {
   assertRulePrefix(output.rules, EXPECTED.managedRulePrefix);
 }
 
-function testEnableBrowserProcessProxy() {
+function testDisableBrowserProcessProxy() {
   const output = runMain(null, function (sandbox) {
-    sandbox.USER_OPTIONS.enableBrowserProcessProxy = true;
+    sandbox.USER_OPTIONS.enableBrowserProcessProxy = false;
   }).output;
 
   assertProcessRules(
     output,
-    true,
+    false,
     EXPECTED.process.browserManaged,
     EXPECTED.chainGroupName
   );
@@ -565,7 +576,7 @@ function testRepeatedRunDoesNotCreateSelfReference() {
 }
 
 testDefaultConfig();
-testEnableBrowserProcessProxy();
+testDisableBrowserProcessProxy();
 testAiCliProcessProxyDefaultsOn();
 testDisableAiCliProcessProxy();
 testOnlyAiAndBrowserProcessesAreManaged();

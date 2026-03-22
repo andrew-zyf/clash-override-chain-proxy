@@ -32,7 +32,7 @@
 // 这一层只放用户手动可改的入口参数。
 var USER_OPTIONS = {
   chainRegion: "SG", // 通用链式代理中转地区，可选 US / JP / HK / SG
-  enableBrowserProcessProxy: false, // 是否纳入浏览器主进程和 helper
+  enableBrowserProcessProxy: true, // 是否纳入浏览器主进程和 helper
   enableAiCliProcessProxy: true // 是否纳入常见 AI CLI
 };
 
@@ -60,7 +60,7 @@ var BASE = {
   miyaProxyNameKeyword: "MiyaIP",
   errorPrefix: "[家宽IP-链式代理] ",
   groupNameSuffixes: {
-    relay: "线路-链式代理-跳板",
+    relay: "-链式代理-跳板",
     chain: "-链式代理-家宽IP出口"
   },
   dns: {

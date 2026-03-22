@@ -14,7 +14,7 @@
 
 - **域外 AI 与支撑平台**：强制命中当前 `chainRegion` 的家宽出口，包括 Claude、ChatGPT、Gemini、NotebookLM、Perplexity，以及 Google、Microsoft、GitHub 等登录、下载、开发相关平台。
 - **按应用名强制分流的 AI 应用**：当前覆盖 `Claude`、`ChatGPT`、`Perplexity`、`Cursor`，以及 `Claude Code`、`Codex`、`Gemini CLI`；`Antigravity` 当前走域名级强制分流。
-- **按应用名强制分流的浏览器**：可选进入普通链式代理，默认关闭；当前维护 `Comet`、`Dia`、`Atlas`、`Google Chrome` 及其明显 helper。
+- **按应用名强制分流的浏览器**：默认进入普通链式代理；当前维护 `Comet`、`Dia`、`Atlas`、`Google Chrome` 及其明显 helper。
 - **社交与流媒体**：走普通链式代理，跟随 `chainRegion`。
 - **域内直连**：固定 `DIRECT`，包括域内 AI，以及腾讯、阿里、字节、WPS 的主力办公、沟通、协作域名。
 - **域外应用直连**：固定 `DIRECT + 域外 DoH + skip-domain`，包括 `Typeless`、`Tailscale` 等。
@@ -76,13 +76,13 @@ function main(config) {
 ```javascript
 var USER_OPTIONS = {
   chainRegion: "SG",
-  enableBrowserProcessProxy: false,
+  enableBrowserProcessProxy: true,
   enableAiCliProcessProxy: true
 };
 ```
 
 - 想切到别的地区：改 `chainRegion`，可选 `US / JP / HK / SG`。
-- 想让浏览器也进入普通链式代理：打开 `enableBrowserProcessProxy`。
+- 不想让浏览器按应用名进入普通链式代理：关闭 `enableBrowserProcessProxy`。
 - 不想让 AI CLI 按应用名强制分流：关闭 `enableAiCliProcessProxy`。
 
 ### 6. 启用
