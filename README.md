@@ -7,24 +7,25 @@
 这份覆写脚本主要做三件事：
 
 - 把域外 AI 服务及其支撑平台，稳定绑定到当前 `chainRegion` 对应的家宽出口。
+- 把社交、流媒体和受管浏览器，单独绑定到 `mediaRegion` 对应的普通地区组，不再进入家宽链路。
 - 让 DNS、Sniffer、规则三层尽量使用同一套分类，减少“规则看着对，出口其实已经偏了”的情况。
 - 给常见 AI 应用、CLI 和浏览器补上进程级分流，尽量少留漏网流量。
 
 > 开源仓库：[github.com/andrew-zyf/clash-override-chain-proxy](https://github.com/andrew-zyf/clash-override-chain-proxy)
 >
-> 当前主脚本版本：`v8.11`
+> 当前主脚本版本：`v8.12`
 
 ## 分流一览
 
 - **域外 AI 与支撑平台**：强制命中当前 `chainRegion` 的家宽出口，包括 Claude、ChatGPT、Gemini、NotebookLM、Perplexity，以及 Google、Microsoft、GitHub 等登录、下载、开发相关平台。
 - **按应用名强制分流的 AI 应用**：当前覆盖 `Claude`、`ChatGPT`、`Perplexity`、`Cursor`、`Antigravity.app`、`Quotio.app`，以及 `Claude Code`、`Codex`、`Gemini CLI`。
-- **按应用名强制分流的浏览器**：默认进入普通链式代理；当前维护 `Dia`、`Atlas`、`Google Chrome`、`SunBrowser`，并显式覆盖 `Helper`、`Helper (Renderer)`、`Helper (GPU)`、`Helper (Plugin)`、`Helper (Alerts)` 进程名。
-- **社交与流媒体**：走普通链式代理，跟随 `chainRegion`。
+- **按应用名强制分流的浏览器**：默认进入 `mediaRegion` 对应的普通地区组；当前维护 `Dia`、`Atlas`、`Google Chrome`、`SunBrowser`，并显式覆盖 `Helper`、`Helper (Renderer)`、`Helper (GPU)`、`Helper (Plugin)`、`Helper (Alerts)` 进程名。
+- **社交与流媒体**：走 `mediaRegion` 对应的普通地区组，不再进入家宽链路。
 - **域内直连**：固定 `DIRECT`，包括域内 AI，以及腾讯、阿里、字节、WPS 的主力办公、沟通、协作域名。
 - **域外应用直连**：固定 `DIRECT + 域外 DoH + skip-domain`，包括 `Typeless`、`Tailscale` 等。
 - **网络地址直连**：固定 `DIRECT`。
 
-可以把它理解成两条主线：一条是“该走家宽的流量不要掉出去”，另一条是“该直连的对象也别被错误拖进链式代理”。
+可以把它理解成三条主线：一条是“该走家宽的 AI 流量不要掉出去”，一条是“媒体和浏览器走独立选区，不再误入家宽链路”，另一条是“该直连的对象也别被错误拖进代理”。
 
 ## 如何使用
 
@@ -77,30 +78,32 @@ function main(config) {
 
 ### 5. 只改你需要的场景
 
-大多数情况下，你只需要改一个参数：`chainRegion`
+大多数情况下，你只需要改两个参数：`chainRegion` 和 `mediaRegion`
 
 ```javascript
 var USER_OPTIONS = {
   chainRegion: "SG",
+  mediaRegion: "US",
   enableBrowserProcessProxy: true,
   enableAiCliProcessProxy: true
 };
 ```
 
-- 想切地区：改 `chainRegion`，可选 `US / JP / HK / SG`。
-- 不想让浏览器按应用名进入普通链式代理：关闭 `enableBrowserProcessProxy`。
+- 想切 AI 家宽地区：改 `chainRegion`，可选 `US / JP / HK / SG`。
+- 想切媒体和浏览器地区：改 `mediaRegion`，可选 `US / JP / HK / SG`。
+- 不想让浏览器按应用名进入 `mediaRegion` 对应的普通地区组：关闭 `enableBrowserProcessProxy`。
 - 不想让 AI CLI 按应用名强制分流：关闭 `enableAiCliProcessProxy`。
 
 ### 6. 启用
 
 - 在 Clash Party 里开启这两个覆写
 - 切回机场配置并启动代理
-- 脚本会把当前 `chainRegion` 对应的 `-链式代理-跳板` 组自动放进 `节点选择`
-- 例如 `chainRegion: "SG"` 时，你会看到 `🇸🇬|新加坡-链式代理-跳板`
+- 脚本会把当前 `chainRegion` 对应的 `-链式代理-跳板` 组，以及当前 `mediaRegion` 对应的 `-媒体` 组自动放进 `节点选择`
+- 例如默认配置下，你会看到 `🇸🇬|新加坡-链式代理-跳板` 和 `🇺🇸|美国-媒体`
 - 确认使用规则模式和 TUN 模式
-- 确认当前地区的家宽出口组已经出现
+- 确认当前地区的家宽出口组和媒体组都已经出现
 
-这里显示的地区名称由 `家宽IP-链式代理.js` 里的 `chainRegion` 决定，不是固定新加坡。比如改成 `US` 之后，自动放进 `节点选择` 的就会变成 `🇺🇸|美国-链式代理-跳板`。实际使用时，建议在 `节点选择` 里手动选中当前地区对应的这个跳板组。
+这里显示的地区名称分别由 `家宽IP-链式代理.js` 里的 `chainRegion` 和 `mediaRegion` 决定。比如把 `chainRegion` 改成 `HK`、`mediaRegion` 保持 `US`，那么 `节点选择` 里会同时出现 `🇭🇰|香港-链式代理-跳板` 和 `🇺🇸|美国-媒体`。实际使用时，建议在 `节点选择` 里手动选中当前地区对应的链式跳板组；媒体流量会由规则直接命中对应的 `-媒体` 组。
 
 ![Clash Party 代理组页面](img/Clash%20Party%20代理组.png)
 
@@ -116,8 +119,9 @@ node tests/validate.js
 
 - **报错“缺少 `config._miya`”**：先检查覆写导入顺序。`MiyaIP 凭证.js` 必须排在主脚本前面，而且文件里确实已经写入了凭证。
 - **报错找不到可用地区跳板**：说明当前 `chainRegion` 没有匹配到可用地区节点。先确认订阅里确实有这个地区，再看节点命名能不能被脚本识别。
-- **节点选择里没有看到 `-链式代理-跳板` 组**：先确认你用的是最新版本的 `家宽IP-链式代理.js`，然后重新加载覆写。脚本会把当前 `chainRegion` 对应的跳板组自动放进 `节点选择`。
-- **出口不符合预期**：先看凭证和中转信息，再看当前地区的家宽出口组和跳板组有没有生成正确。大多数偏差都出在这两层。
+- **报错找不到可用媒体节点**：说明当前 `mediaRegion` 没有匹配到可用地区节点。先确认订阅里确实有这个地区，再看节点命名能不能被脚本识别。
+- **节点选择里没有看到 `-链式代理-跳板` 或 `-媒体` 组**：先确认你用的是最新版本的 `家宽IP-链式代理.js`，然后重新加载覆写。脚本会把当前 `chainRegion` 对应的跳板组和当前 `mediaRegion` 对应的媒体组自动放进 `节点选择`。
+- **出口不符合预期**：先看凭证和中转信息，再看当前地区的家宽出口组、跳板组和媒体组有没有生成正确。大多数偏差都出在这几层。
 - **为什么会有域外应用直连**：这类对象本来就不适合走家宽链式代理，但解析也不能随手落回域内，所以会固定成 `DIRECT + 域外 DoH + skip-domain`。
 
 ## 兼容性

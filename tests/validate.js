@@ -36,12 +36,18 @@ function buildBrowserProcessNames(browserApps, helperSuffixes) {
 const EXPECTED = {
   chainGroupName: "🇸🇬|新加坡-链式代理-家宽IP出口",
   relayGroupName: "🇸🇬|新加坡-链式代理-跳板",
+  mediaGroupName: "🇺🇸|美国-媒体",
   managedNodes: {
     relayName: "自选节点 + 家宽IP",
     transitName: "MiyaIP（官方中转）",
     relayMembers: ["🇸🇬 SG Auto 01"],
+    mediaMembers: ["🇺🇸 US Auto 01"],
     chainMembers: ["MiyaIP（官方中转）", "自选节点 + 家宽IP"],
-    nodeSelectionMembers: ["🇸🇬 SG Auto 01", "🇸🇬|新加坡-链式代理-跳板"]
+    nodeSelectionMembers: [
+      "🇸🇬 SG Auto 01",
+      "🇸🇬|新加坡-链式代理-跳板",
+      "🇺🇸|美国-媒体"
+    ]
   },
   managedRulePrefix: [
     "PROCESS-NAME,Claude,🇸🇬|新加坡-链式代理-家宽IP出口",
@@ -119,7 +125,8 @@ function createBaseConfig() {
   return {
     proxies: [
       { name: "🇸🇬 SG Auto 01", type: "ss" },
-      { name: "🇭🇰 HK Auto 01", type: "ss" }
+      { name: "🇭🇰 HK Auto 01", type: "ss" },
+      { name: "🇺🇸 US Auto 01", type: "ss" }
     ],
     "proxy-groups": [
       {
@@ -255,6 +262,7 @@ function assertManagedProxyTopology(output, expectedRelayTarget) {
   const transitProxy = findProxy(output, EXPECTED.managedNodes.transitName);
   const relayGroup = findGroup(output, EXPECTED.relayGroupName);
   const chainGroup = findGroup(output, EXPECTED.chainGroupName);
+  const mediaGroup = findGroup(output, EXPECTED.mediaGroupName);
   const nodeSelectionGroup = findGroup(output, "节点选择");
 
   assert(relayProxy, "Expected relay proxy to exist");
@@ -289,6 +297,13 @@ function assertManagedProxyTopology(output, expectedRelayTarget) {
     JSON.stringify(EXPECTED.managedNodes.chainMembers)
   );
 
+  assert(mediaGroup, "Expected media group to exist");
+  assert.strictEqual(mediaGroup.type, "url-test");
+  assert.strictEqual(
+    JSON.stringify(mediaGroup.proxies),
+    JSON.stringify(EXPECTED.managedNodes.mediaMembers)
+  );
+
   assert(nodeSelectionGroup, "Expected 节点选择 group to exist");
   assert.strictEqual(nodeSelectionGroup.type, "select");
   assert.strictEqual(
@@ -305,7 +320,6 @@ function assertCoreStrictRouting(output) {
     "DOMAIN-SUFFIX,gemini.google.com," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,perplexity.ai," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,google.com," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Claude," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Antigravity.app," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Quotio.app," + EXPECTED.chainGroupName,
@@ -314,6 +328,20 @@ function assertCoreStrictRouting(output) {
   ]);
   assertRulesMissing(output.rules, [
     "DOMAIN-SUFFIX,claude.ai,DIRECT"
+  ]);
+}
+
+function assertMediaRouting(output) {
+  assertRulesExist(output.rules, [
+    "DOMAIN-SUFFIX,youtube.com," + EXPECTED.mediaGroupName,
+    "DOMAIN-SUFFIX,netflix.com," + EXPECTED.mediaGroupName,
+    "DOMAIN-SUFFIX,x.com," + EXPECTED.mediaGroupName,
+    "DOMAIN-SUFFIX,telegram.org," + EXPECTED.mediaGroupName,
+    "DOMAIN-SUFFIX,discord.com," + EXPECTED.mediaGroupName
+  ]);
+  assertRulesMissing(output.rules, [
+    "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
+    "DOMAIN-SUFFIX,x.com," + EXPECTED.chainGroupName
   ]);
 }
 
@@ -397,16 +425,23 @@ function testDefaultConfig() {
   assertManagedProxyTopology(output, EXPECTED.relayGroupName);
 
   assertCoreStrictRouting(output);
+  assertMediaRouting(output);
   assertProcessRules(
     output,
     true,
     EXPECTED.process.browserManaged,
-    EXPECTED.chainGroupName
+    EXPECTED.mediaGroupName
   );
   assertProcessRules(
     output,
     false,
     EXPECTED.process.browserExcluded,
+    EXPECTED.mediaGroupName
+  );
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.browserManaged,
     EXPECTED.chainGroupName
   );
   assertDomesticDirectCoverage(output, sandbox);
@@ -425,13 +460,13 @@ function testDisableBrowserProcessProxy() {
     output,
     false,
     EXPECTED.process.browserManaged,
-    EXPECTED.chainGroupName
+    EXPECTED.mediaGroupName
   );
   assertProcessRules(
     output,
     false,
     EXPECTED.process.browserExcluded,
-    EXPECTED.chainGroupName
+    EXPECTED.mediaGroupName
   );
 }
 
@@ -484,25 +519,34 @@ function testOnlyAiAndBrowserProcessesAreManaged() {
 function testMissingRegionFails() {
   const sandbox = loadSandbox();
   const config = createBaseConfig();
-  config.proxies = config.proxies.filter(function (proxy) {
-    return proxy.name.indexOf("🇸🇬") < 0;
-  });
-  config["proxy-groups"] = [{ name: "节点选择", type: "select", proxies: ["🇭🇰 HK Auto 01"] }];
-  sandbox.USER_OPTIONS.chainRegion = "US";
+  sandbox.USER_OPTIONS.chainRegion = "JP";
 
   assert.throws(
     function () {
       sandbox.main(config);
     },
-    /未找到可用的 US 节点/
+    /未找到可用的 JP 节点/
+  );
+}
+
+function testMissingMediaRegionFails() {
+  const sandbox = loadSandbox();
+  const config = createBaseConfig();
+  sandbox.USER_OPTIONS.mediaRegion = "JP";
+
+  assert.throws(
+    function () {
+      sandbox.main(config);
+    },
+    /未找到可用的 JP 媒体节点/
   );
 }
 
 function testMissingStrictTargetFails() {
   const sandbox = loadSandbox();
   const originalResolveRoutingTargets = sandbox.resolveRoutingTargets;
-  sandbox.resolveRoutingTargets = function (config, region) {
-    const routingTargets = originalResolveRoutingTargets(config, region);
+  sandbox.resolveRoutingTargets = function (config, chainRegion, mediaRegion) {
+    const routingTargets = originalResolveRoutingTargets(config, chainRegion, mediaRegion);
     routingTargets.strictAiTarget = "错误目标";
     return routingTargets;
   };
@@ -547,6 +591,11 @@ function testExistingManagedObjectsAreReconciled() {
       type: "select",
       proxies: ["DIRECT"]
     });
+    config["proxy-groups"].push({
+      name: EXPECTED.mediaGroupName,
+      type: "select",
+      proxies: ["DIRECT"]
+    });
   }).output;
 
   assertManagedProxyTopology(output, EXPECTED.relayGroupName);
@@ -580,7 +629,8 @@ function testNodeSelectionKeepsOnlyCurrentRelayGroup() {
   const output = runMain(function (config) {
     config["proxy-groups"][0].proxies = [
       "🇸🇬 SG Auto 01",
-      "🇭🇰|香港-链式代理-跳板"
+      "🇭🇰|香港-链式代理-跳板",
+      "🇸🇬|新加坡-媒体"
     ];
   }).output;
 
@@ -616,6 +666,10 @@ function testRepeatedRunDoesNotCreateSelfReference() {
     secondOutput["proxy-groups"].filter((group) => group.name === EXPECTED.relayGroupName).length,
     1
   );
+  assert.strictEqual(
+    secondOutput["proxy-groups"].filter((group) => group.name === EXPECTED.mediaGroupName).length,
+    1
+  );
 }
 
 testDefaultConfig();
@@ -624,6 +678,7 @@ testAiCliProcessProxyDefaultsOn();
 testDisableAiCliProcessProxy();
 testOnlyAiAndBrowserProcessesAreManaged();
 testMissingRegionFails();
+testMissingMediaRegionFails();
 testMissingStrictTargetFails();
 testExistingManagedObjectsAreReconciled();
 testChainGroupIsNotReusedAsRelayTarget();

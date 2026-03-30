@@ -2,9 +2,10 @@
  * Clash 家宽IP-链式代理覆写脚本
  *
  * 作用：
- * 1. 注入 MiyaIP 链式代理节点和地区代理组。
- * 2. 覆写 DNS、Sniffer，以及域外 AI / 浏览器 / DIRECT 分流规则。
- * 3. 校验关键 AI 目标是否命中当前 `chainRegion` 出口。
+ * 1. 注入 MiyaIP 链式代理节点、AI 家宽出口组，以及媒体地区组。
+ * 2. 让域外 AI 与支撑平台稳定命中 `chainRegion` 对应的家宽出口。
+ * 3. 让媒体域名和受管浏览器进程命中 `mediaRegion` 对应的普通地区组。
+ * 4. 覆写 DNS、Sniffer 和 DIRECT 保留规则，并校验关键目标是否命中预期出口。
  *
  * 结构：
  * 1. 用户参数
@@ -22,7 +23,7 @@
  * - 使用 ES5 语法，不依赖箭头函数、解构赋值、模板字符串、
  *   展开语法、`Object.values()`、`Object.fromEntries()` 等 ES6+ 特性。
  *
- * @version 8.11
+ * @version 8.12
  */
 
 // ---------------------------------------------------------------------------
@@ -31,8 +32,9 @@
 
 // 这一层只放用户手动可改的入口参数。
 var USER_OPTIONS = {
-  chainRegion: "SG", // 通用链式代理中转地区，可选 US / JP / HK / SG
-  enableBrowserProcessProxy: true, // 是否纳入浏览器主进程和 helper
+  chainRegion: "SG", // AI 家宽出口前一跳地区，可选 US / JP / HK / SG
+  mediaRegion: "US", // 媒体与受管浏览器默认地区，可选 US / JP / HK / SG
+  enableBrowserProcessProxy: true, // 是否让受管浏览器按应用名进入 mediaRegion
   enableAiCliProcessProxy: true // 是否纳入常见 AI CLI
 };
 
@@ -61,7 +63,8 @@ var BASE = {
   errorPrefix: "[家宽IP-链式代理] ",
   groupNameSuffixes: {
     relay: "-链式代理-跳板",
-    chain: "-链式代理-家宽IP出口"
+    chain: "-链式代理-家宽IP出口",
+    media: "-媒体"
   },
   dns: {
     overseas: [
@@ -323,6 +326,7 @@ var SOURCE_PATTERNS = {
 };
 
 // 这一层只放原始进程分类，当前只保留 AI 与浏览器两类。
+// AI 进程后续会走家宽出口，浏览器进程后续会走媒体组选区。
 var SOURCE_PROCESSES = {
   chain: {
     aiApps: {
@@ -344,7 +348,7 @@ var SOURCE_PROCESSES = {
     aiCli: ["claude", "gemini", "codex"],
     browser: {
       apps: [
-        // "Comet", // 不走链式代理
+        // "Comet", // 不走脚本托管的媒体组选区
         "Dia",
         "Atlas",
         "Google Chrome",
@@ -481,7 +485,7 @@ function buildDerivedPatternsBase() {
   };
 }
 
-// 在展平后的模式之上补齐直连、严格路由和 Sniffer 入口。
+// 在展平后的模式之上补齐直连、AI 家宽、媒体组选区和 Sniffer 入口。
 function buildDerivedPatterns() {
   var patterns = buildDerivedPatternsBase();
   var directDomesticGroups = [
@@ -507,14 +511,14 @@ function buildDerivedPatterns() {
     strictPatterns.support,
     strictPatterns.validation
   ]);
-  var generalChainPatterns = excludeStrings(patterns.chain.media, directAll);
+  var mediaPatterns = excludeStrings(patterns.chain.media, directAll);
 
   patterns.direct.domestic.groups = directDomesticGroups;
   patterns.direct.groups = directGroups;
   patterns.strict = strictPatterns;
   patterns.strict.all = strictAll;
   patterns.general = {
-    chain: generalChainPatterns
+    media: mediaPatterns
   };
 
   patterns.sniffer = {
@@ -531,6 +535,7 @@ function buildDerivedPatterns() {
 }
 
 // 进程派生单独收口，避免和域名模式的路由语义混在一起。
+// 这里统一产出“严格 AI”与“媒体组选区”两类进程入口。
 function buildDerivedProcessNames() {
   var processNames = {
     ai: {
@@ -569,8 +574,8 @@ var DERIVED = {
   }
 };
 
-// 校验目标单独成层，避免规则写入断言散落在函数内部。
-function buildValidationTargets() {
+// 校验目标单独成层，避免 AI 家宽与媒体组选区断言散落在函数内部。
+function buildStrictValidationTargets() {
   var validationTargets = [
     { type: "DOMAIN-SUFFIX", value: "claude.ai" },
     { type: "DOMAIN-SUFFIX", value: "chatgpt.com" },
@@ -583,6 +588,20 @@ function buildValidationTargets() {
   if (USER_OPTIONS.enableAiCliProcessProxy) {
     validationTargets.push({ type: "PROCESS-NAME", value: "claude" });
     validationTargets.push({ type: "PROCESS-NAME", value: "codex" });
+  }
+
+  return validationTargets;
+}
+
+// 校验媒体域名和浏览器进程是否命中独立媒体组选区。
+function buildMediaValidationTargets() {
+  var validationTargets = [
+    { type: "DOMAIN-SUFFIX", value: "youtube.com" },
+    { type: "DOMAIN-SUFFIX", value: "x.com" }
+  ];
+
+  if (USER_OPTIONS.enableBrowserProcessProxy) {
+    validationTargets.push({ type: "PROCESS-NAME", value: "Google Chrome" });
   }
 
   return validationTargets;
@@ -647,9 +666,9 @@ function buildNameserverPolicy() {
   ); // 域内办公软件走域内 DoH
   assignNameserverPolicyDomains(
     policy,
-    DERIVED.patterns.general.chain,
+    DERIVED.patterns.general.media,
     BASE.dns.overseas
-  ); // 流媒体与域外社交走域外 DoH
+  ); // 媒体组选区相关域名走域外 DoH
 
   return policy;
 }
@@ -708,11 +727,11 @@ function buildDnsFakeIpFilter() {
     .concat(homeRouterDomains);
 }
 
-// 构建 `fallback-filter` 使用的域名匹配列表。
+// 构建 `fallback-filter` 使用的域名匹配列表，覆盖 AI 家宽、媒体组选区和域外直连应用。
 function buildDnsFallbackFilterDomains() {
   return mergeStringGroups([
     DERIVED.patterns.strict.all,
-    DERIVED.patterns.general.chain,
+    DERIVED.patterns.general.media,
     DERIVED.patterns.direct.overseasApps
   ]);
 }
@@ -755,7 +774,7 @@ function buildDnsConfig() {
   return dnsConfig;
 }
 
-// 构建域名嗅探配置。
+// 构建域名嗅探配置，继续复用 AI 严格分类与直连跳过项。
 function buildSnifferConfig() {
   return {
     enable: true,
@@ -772,10 +791,10 @@ function buildSnifferConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// MiyaIP 代理链路
+// MiyaIP 代理链路与地区组选区
 // ---------------------------------------------------------------------------
 
-// 这一段负责 MiyaIP 代理链路的解析、组装和绑定。
+// 这一段负责 MiyaIP 代理链路、链式跳板和媒体组选区的解析、组装与绑定。
 
 // 确保主配置里存在代理、代理组和规则三个容器。
 function ensureProxyContainers(config) {
@@ -884,32 +903,49 @@ function upsertRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames) {
   });
 }
 
-// 把当前地区的链式代理跳板组同步进 `节点选择`，并剔除旧地区跳板。
-function syncRelayGroupIntoNodeSelection(config, relayGroupName) {
+// 把当前脚本生成的地区代理组同步进 `节点选择`，并剔除旧同类组。
+function syncManagedGroupIntoNodeSelection(config, managedGroupName, managedGroupSuffix) {
   var nodeSelectionGroup = findProxyGroupByName(config["proxy-groups"], "节点选择");
   if (!nodeSelectionGroup || !nodeSelectionGroup.proxies) return;
 
   var nextProxyNames = [];
-  var relaySuffix = BASE.groupNameSuffixes.relay;
   var i;
   var proxyName;
-  var relaySuffixIndex;
+  var managedSuffixIndex;
 
   for (i = 0; i < nodeSelectionGroup.proxies.length; i++) {
     proxyName = nodeSelectionGroup.proxies[i];
-    relaySuffixIndex = proxyName.lastIndexOf(relaySuffix);
-    if (proxyName === relayGroupName) continue;
+    managedSuffixIndex = proxyName.lastIndexOf(managedGroupSuffix);
+    if (proxyName === managedGroupName) continue;
     if (
-      relaySuffixIndex >= 0 &&
-      relaySuffixIndex === proxyName.length - relaySuffix.length
+      managedSuffixIndex >= 0 &&
+      managedSuffixIndex === proxyName.length - managedGroupSuffix.length
     ) {
       continue;
     }
     nextProxyNames.push(proxyName);
   }
 
-  nextProxyNames.push(relayGroupName);
+  nextProxyNames.push(managedGroupName);
   nodeSelectionGroup.proxies = uniqueStrings(nextProxyNames);
+}
+
+// 把当前地区的链式代理跳板组同步进 `节点选择`。
+function syncRelayGroupIntoNodeSelection(config, relayGroupName) {
+  syncManagedGroupIntoNodeSelection(
+    config,
+    relayGroupName,
+    BASE.groupNameSuffixes.relay
+  );
+}
+
+// 把当前地区的媒体组选区同步进 `节点选择`。
+function syncMediaGroupIntoNodeSelection(config, mediaGroupName) {
+  syncManagedGroupIntoNodeSelection(
+    config,
+    mediaGroupName,
+    BASE.groupNameSuffixes.media
+  );
 }
 
 // 向主配置注入家宽出口和官方中转两个 MiyaIP 节点。
@@ -929,6 +965,7 @@ function injectMiyaProxies(config, miyaCredentials) {
 }
 
 // 仅根据订阅节点创建或修正指定地区的 `url-test` 代理组。
+// 当前既用于链式跳板，也用于媒体组选区。
 function ensureRegionGroup(config, region, groupNameSuffix) {
   var regionMeta = resolveRegionMeta(region, false);
   if (!regionMeta) return null;
@@ -940,7 +977,7 @@ function ensureRegionGroup(config, region, groupNameSuffix) {
   var regionNodeNames = collectRegionNodeNames(config.proxies, regionRegex);
   if (regionNodeNames.length === 0) return null;
 
-  upsertRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames); // 用地区节点创建或修正 url-test 组
+  upsertRegionUrlTestGroup(proxyGroups, groupName, regionNodeNames); // 用订阅地区节点创建或修正目标组
 
   return groupName;
 }
@@ -958,6 +995,19 @@ function resolveRelayTarget(config, region) {
   return relayTarget;
 }
 
+// 解析媒体应使用的普通地区组。
+function resolveMediaTarget(config, region) {
+  var mediaTarget = ensureRegionGroup(config, region, BASE.groupNameSuffixes.media);
+  if (!mediaTarget) {
+    throw createUserError(
+      "未找到可用的 " +
+        region +
+        " 媒体节点，请检查 mediaRegion 是否与订阅地区一致"
+    );
+  }
+  return mediaTarget;
+}
+
 // 给家宽出口节点绑定拨号前置代理，并清理官方中转节点的拨号代理。
 function bindDialerProxy(config, relayTarget) {
   var relayProxy = findProxyByName(config.proxies, BASE.nodeNames.relay);
@@ -970,7 +1020,7 @@ function bindDialerProxy(config, relayTarget) {
   if (transitProxy) delete transitProxy["dialer-proxy"]; // 官方中转节点不挂 dialer-proxy
 }
 
-// 确保存在一个承载 MiyaIP 官方中转与家宽出口的链式代理组。
+// 确保存在一个承载 MiyaIP 官方中转与家宽出口的 AI 家宽出口组。
 function ensureChainGroup(config, region) {
   var regionMeta = resolveRegionMeta(region, true);
   var chainGroupName = buildRegionGroupName(
@@ -988,24 +1038,28 @@ function ensureChainGroup(config, region) {
 }
 
 // 统一解析本轮注入所需的关键目标，减少主流程里的状态分散。
-function resolveRoutingTargets(config, region) {
-  var relayTarget = resolveRelayTarget(config, region);
+// 这里会同时收敛链式跳板、AI 家宽出口和媒体组选区。
+function resolveRoutingTargets(config, chainRegion, mediaRegion) {
+  var relayTarget = resolveRelayTarget(config, chainRegion);
   syncRelayGroupIntoNodeSelection(config, relayTarget);
-  var chainGroupName = ensureChainGroup(config, region);
+  var chainGroupName = ensureChainGroup(config, chainRegion);
+  var mediaTarget = resolveMediaTarget(config, mediaRegion);
+  syncMediaGroupIntoNodeSelection(config, mediaTarget);
   return {
     relayTarget: relayTarget,
     chainGroupName: chainGroupName,
-    strictAiTarget: chainGroupName
+    strictAiTarget: chainGroupName,
+    mediaTarget: mediaTarget
   };
 }
 
-// 把代理链路绑定与管理规则注入收口到一个装配步骤。
+// 把拨号代理绑定和受管规则注入收口到一个装配步骤。
 function applyManagedRouting(config, routingTargets) {
   bindDialerProxy(config, routingTargets.relayTarget);
   injectManagedRules(
     config,
     routingTargets.strictAiTarget,
-    routingTargets.chainGroupName
+    routingTargets.mediaTarget
   );
 }
 
@@ -1026,10 +1080,10 @@ function getRuleIdentity(ruleLine) {
   return ruleLine.substring(0, secondCommaIndex);
 }
 
-// 按固定优先级拼出直连保留项和链式代理两类管理规则。
-function buildManagedRules(strictAiTarget, chainGroupName) {
+// 按固定优先级拼出直连保留项、严格 AI 规则和媒体组选区规则。
+function buildManagedRules(strictAiTarget, mediaTarget) {
   return buildStrictChainRules(strictAiTarget)
-    .concat(buildGeneralChainRules(chainGroupName))
+    .concat(buildMediaRules(mediaTarget))
     .concat(buildDirectRules());
 }
 
@@ -1066,9 +1120,9 @@ function prependRules(targetRules, rulesToPrepend) {
 function injectManagedRules(
   config,
   strictAiTarget,
-  chainGroupName
+  mediaTarget
 ) {
-  var managedRules = buildManagedRules(strictAiTarget, chainGroupName);
+  var managedRules = buildManagedRules(strictAiTarget, mediaTarget);
   var managedRuleIdentities = buildRuleIdentityLookup(managedRules);
 
   config.rules = filterConflictingRules(config.rules, managedRuleIdentities);
@@ -1167,8 +1221,8 @@ function buildStrictProcessGroups() {
   return processGroups;
 }
 
-// 按当前用户选项返回应继续使用普通链式代理的进程分组。
-function buildGeneralChainProcessGroups() {
+// 按当前用户选项返回应纳入媒体组选区的进程分组。
+function buildMediaProcessGroups() {
   if (!USER_OPTIONS.enableBrowserProcessProxy) return [];
   return [DERIVED.processNames.general.browser];
 }
@@ -1198,11 +1252,11 @@ function buildStrictChainRules(strictAiTarget) {
   return ruleLines;
 }
 
-// 生成非严格链式代理规则，保持既有浏览器与媒体行为。
-function buildGeneralChainRules(chainGroupName) {
+// 生成媒体组选区规则，承载浏览器进程与媒体域名。
+function buildMediaRules(mediaTarget) {
   var ruleLines = [];
   var seenRuleIdentities = {};
-  var processGroups = buildGeneralChainProcessGroups();
+  var processGroups = buildMediaProcessGroups();
   var i;
 
   for (i = 0; i < processGroups.length; i++) {
@@ -1210,15 +1264,15 @@ function buildGeneralChainRules(chainGroupName) {
       ruleLines,
       seenRuleIdentities,
       processGroups[i],
-      chainGroupName
+      mediaTarget
     );
   }
 
   addSuffixRulesIfNotExists(
     ruleLines,
     seenRuleIdentities,
-    DERIVED.patterns.general.chain,
-    chainGroupName
+    DERIVED.patterns.general.media,
+    mediaTarget
   );
 
   return ruleLines;
@@ -1258,7 +1312,7 @@ function assertManagedRuleTarget(ruleLines, type, value, target) {
   var ruleLine = type + "," + value + "," + target;
   if (ruleLines.indexOf(ruleLine) >= 0) return;
   throw createUserError(
-    "关键规则未正确写入: " + ruleLine + "，请检查 chainRegion 和订阅代理组"
+    "关键规则未正确写入: " + ruleLine + "，请检查 chainRegion / mediaRegion 和订阅代理组"
   );
 }
 
@@ -1271,18 +1325,25 @@ function haveSameStrings(values, expectedValues) {
   return true;
 }
 
-// 验证关键 AI 规则目标，避免静默泄漏或错误地区回退。
+// 验证关键 AI 家宽与媒体组选区规则目标，避免静默泄漏或错误地区回退。
 function validateManagedRouting(config, routingTargets) {
   var i;
   var relayProxy;
   var transitProxy;
   var chainGroup;
+  var mediaGroup;
   var expectedChainMembers = [BASE.nodeNames.transit, BASE.nodeNames.relay];
-  var validationTargets = buildValidationTargets();
+  var strictValidationTargets = buildStrictValidationTargets();
+  var mediaValidationTargets = buildMediaValidationTargets();
 
   if (routingTargets.strictAiTarget !== routingTargets.chainGroupName) {
     throw createUserError(
       "域外 AI 与支撑平台未直接指向当前 chainRegion 出口，请检查 chainRegion 或代理组注入逻辑"
+    );
+  }
+  if (routingTargets.mediaTarget === routingTargets.chainGroupName) {
+    throw createUserError(
+      "媒体组选区错误复用了家宽出口组，请检查 mediaRegion 或媒体组选区注入逻辑"
     );
   }
   if (routingTargets.relayTarget === routingTargets.chainGroupName) {
@@ -1293,6 +1354,11 @@ function validateManagedRouting(config, routingTargets) {
   if (!hasProxyOrGroup(config, routingTargets.relayTarget)) {
     throw createUserError(
       "当前 chainRegion 跳板不存在，请检查 chainRegion 和订阅代理组"
+    );
+  }
+  if (!hasProxyOrGroup(config, routingTargets.mediaTarget)) {
+    throw createUserError(
+      "当前 mediaRegion 媒体组选区不存在，请检查 mediaRegion 和订阅代理组"
     );
   }
 
@@ -1321,12 +1387,35 @@ function validateManagedRouting(config, routingTargets) {
     );
   }
 
-  for (i = 0; i < validationTargets.length; i++) {
+  mediaGroup = findProxyGroupByName(config["proxy-groups"], routingTargets.mediaTarget);
+  if (
+    !mediaGroup ||
+    mediaGroup.type !== "url-test" ||
+    !mediaGroup.proxies ||
+    mediaGroup.proxies.length === 0 ||
+    mediaGroup.proxies.indexOf(BASE.nodeNames.relay) >= 0 ||
+    mediaGroup.proxies.indexOf(BASE.nodeNames.transit) >= 0
+  ) {
+    throw createUserError(
+      "当前 mediaRegion 的媒体组选区内容异常，请检查媒体组选区注入逻辑"
+    );
+  }
+
+  for (i = 0; i < strictValidationTargets.length; i++) {
     assertManagedRuleTarget(
       config.rules,
-      validationTargets[i].type,
-      validationTargets[i].value,
+      strictValidationTargets[i].type,
+      strictValidationTargets[i].value,
       routingTargets.strictAiTarget
+    );
+  }
+
+  for (i = 0; i < mediaValidationTargets.length; i++) {
+    assertManagedRuleTarget(
+      config.rules,
+      mediaValidationTargets[i].type,
+      mediaValidationTargets[i].value,
+      routingTargets.mediaTarget
     );
   }
 }
@@ -1336,6 +1425,7 @@ function validateManagedRouting(config, routingTargets) {
 // ---------------------------------------------------------------------------
 
 // 这一段负责主流程装配，按初始化、DNS、链路、规则、校验的顺序执行。
+// 主流程同时覆盖 AI 家宽出口和媒体组选区两条路径。
 
 // 把带通配前缀的域名模式转换成规则使用的裸域名后缀。
 function toSuffix(domainPattern) {
@@ -1365,7 +1455,8 @@ function main(config) {
 
   routingTargets = resolveRoutingTargets(
     config,
-    USER_OPTIONS.chainRegion
+    USER_OPTIONS.chainRegion,
+    USER_OPTIONS.mediaRegion
   ); // 解析链路目标
   applyManagedRouting(config, routingTargets); // 写入拨号与规则
   validateManagedRouting(config, routingTargets); // 校验关键目标
