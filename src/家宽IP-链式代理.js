@@ -3,8 +3,8 @@
  *
  * 作用：
  * 1. 注入 MiyaIP 链式代理节点、AI 家宽出口组，以及媒体地区组。
- * 2. 让域外 AI 与支撑平台稳定命中 `chainRegion` 对应的家宽出口。
- * 3. 让媒体域名和受管浏览器进程命中 `mediaRegion` 对应的普通地区组。
+ * 2. 让域外 AI、支撑平台和受管浏览器进程稳定命中 `chainRegion` 对应的链式代理出口。
+ * 3. 让媒体域名命中 `mediaRegion` 对应的普通地区组。
  * 4. 覆写 DNS、Sniffer 和 DIRECT 保留规则，并校验关键目标是否命中预期出口。
  *
  * 结构：
@@ -33,9 +33,9 @@
 // 这一层只放用户手动可改的入口参数。
 var USER_OPTIONS = {
   chainRegion: "SG", // AI 家宽出口前一跳地区，可选 US / JP / HK / SG
-  mediaRegion: "US", // 媒体与受管浏览器默认地区，可选 US / JP / HK / SG
-  enableBrowserProcessProxy: true, // 是否让受管浏览器按应用名进入 mediaRegion
-  enableAiCliProcessProxy: true // 是否纳入常见 AI CLI
+  mediaRegion: "US", // 媒体默认地区，可选 US / JP / HK / SG
+  enableChainRegionBrowserProcessProxy: true, // 是否让受管浏览器按应用名继续强制走 chainRegion
+  enableChainRegionAiCliProcessProxy: true // 是否让常见 AI CLI 按应用名继续强制走 chainRegion
 };
 
 // ---------------------------------------------------------------------------
@@ -326,7 +326,7 @@ var SOURCE_PATTERNS = {
 };
 
 // 这一层只放原始进程分类，当前只保留 AI 与浏览器两类。
-// AI 进程后续会走家宽出口，浏览器进程后续会走媒体组选区。
+// AI 与浏览器进程后续都会走链式代理出口。
 var SOURCE_PROCESSES = {
   chain: {
     aiApps: {
@@ -340,6 +340,10 @@ var SOURCE_PROCESSES = {
         "Helper"
       ],
       exact: [
+        "ChatGPTHelper",
+        "Claude Helper (Renderer)",
+        "Claude Helper (GPU)",
+        "Claude Helper (Plugin)",
         "Antigravity.app",
         "Quotio.app",
         // "CC Switch.app"
@@ -454,6 +458,31 @@ function createUserError(message) {
   return new Error(BASE.errorPrefix + message);
 }
 
+// 解析布尔型用户参数，优先使用新键，必要时兼容旧键。
+function resolveBooleanOption(preferredValue, legacyValue, defaultValue) {
+  if (typeof preferredValue === "boolean") return preferredValue;
+  if (typeof legacyValue === "boolean") return legacyValue;
+  return defaultValue;
+}
+
+// 是否让常见 AI CLI 继续按应用名强制走 chainRegion。
+function isChainRegionAiCliProcessProxyEnabled() {
+  return resolveBooleanOption(
+    USER_OPTIONS.enableChainRegionAiCliProcessProxy,
+    USER_OPTIONS.enableAiCliProcessProxy,
+    true
+  );
+}
+
+// 是否让受管浏览器继续按应用名强制走 chainRegion。
+function isChainRegionBrowserProcessProxyEnabled() {
+  return resolveBooleanOption(
+    USER_OPTIONS.enableChainRegionBrowserProcessProxy,
+    USER_OPTIONS.enableBrowserProcessProxy,
+    true
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 派生分类与统一入口
 // ---------------------------------------------------------------------------
@@ -535,7 +564,7 @@ function buildDerivedPatterns() {
 }
 
 // 进程派生单独收口，避免和域名模式的路由语义混在一起。
-// 这里统一产出“严格 AI”与“媒体组选区”两类进程入口。
+// 这里统一产出“严格 AI”与“链式浏览器”两类进程入口。
 function buildDerivedProcessNames() {
   var processNames = {
     ai: {
@@ -585,7 +614,7 @@ function buildStrictValidationTargets() {
     { type: "PROCESS-NAME", value: "Claude" }
   ];
 
-  if (USER_OPTIONS.enableAiCliProcessProxy) {
+  if (isChainRegionAiCliProcessProxyEnabled()) {
     validationTargets.push({ type: "PROCESS-NAME", value: "claude" });
     validationTargets.push({ type: "PROCESS-NAME", value: "codex" });
   }
@@ -593,18 +622,20 @@ function buildStrictValidationTargets() {
   return validationTargets;
 }
 
-// 校验媒体域名和浏览器进程是否命中独立媒体组选区。
+// 校验媒体域名是否命中独立媒体组选区。
 function buildMediaValidationTargets() {
   var validationTargets = [
     { type: "DOMAIN-SUFFIX", value: "youtube.com" },
     { type: "DOMAIN-SUFFIX", value: "x.com" }
   ];
 
-  if (USER_OPTIONS.enableBrowserProcessProxy) {
-    validationTargets.push({ type: "PROCESS-NAME", value: "Google Chrome" });
-  }
-
   return validationTargets;
+}
+
+// 校验受管浏览器进程是否继续命中链式代理出口。
+function buildBrowserValidationTargets() {
+  if (!isChainRegionBrowserProcessProxyEnabled()) return [];
+  return [{ type: "PROCESS-NAME", value: "Google Chrome" }];
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,9 +1111,10 @@ function getRuleIdentity(ruleLine) {
   return ruleLine.substring(0, secondCommaIndex);
 }
 
-// 按固定优先级拼出直连保留项、严格 AI 规则和媒体组选区规则。
+// 按固定优先级拼出直连保留项、严格 AI 规则、链式浏览器规则和媒体组选区规则。
 function buildManagedRules(strictAiTarget, mediaTarget) {
   return buildStrictChainRules(strictAiTarget)
+    .concat(buildBrowserChainRules(strictAiTarget))
     .concat(buildMediaRules(mediaTarget))
     .concat(buildDirectRules());
 }
@@ -1215,15 +1247,15 @@ function addProcessRulesIfNotExists(
 // 按当前用户选项返回应纳入严格 AI 路由的进程分组。
 function buildStrictProcessGroups() {
   var processGroups = [DERIVED.processNames.strict.base];
-  if (USER_OPTIONS.enableAiCliProcessProxy) {
+  if (isChainRegionAiCliProcessProxyEnabled()) {
     processGroups.push(DERIVED.processNames.strict.optionalAiCli);
   }
   return processGroups;
 }
 
-// 按当前用户选项返回应纳入媒体组选区的进程分组。
-function buildMediaProcessGroups() {
-  if (!USER_OPTIONS.enableBrowserProcessProxy) return [];
+// 按当前用户选项返回应纳入链式代理的浏览器进程分组。
+function buildBrowserChainProcessGroups() {
+  if (!isChainRegionBrowserProcessProxyEnabled()) return [];
   return [DERIVED.processNames.general.browser];
 }
 
@@ -1252,11 +1284,11 @@ function buildStrictChainRules(strictAiTarget) {
   return ruleLines;
 }
 
-// 生成媒体组选区规则，承载浏览器进程与媒体域名。
-function buildMediaRules(mediaTarget) {
+// 生成链式浏览器规则，承载按应用名强制分流的浏览器进程。
+function buildBrowserChainRules(browserTarget) {
   var ruleLines = [];
   var seenRuleIdentities = {};
-  var processGroups = buildMediaProcessGroups();
+  var processGroups = buildBrowserChainProcessGroups();
   var i;
 
   for (i = 0; i < processGroups.length; i++) {
@@ -1264,9 +1296,17 @@ function buildMediaRules(mediaTarget) {
       ruleLines,
       seenRuleIdentities,
       processGroups[i],
-      mediaTarget
+      browserTarget
     );
   }
+
+  return ruleLines;
+}
+
+// 生成媒体组选区规则，只承载媒体域名。
+function buildMediaRules(mediaTarget) {
+  var ruleLines = [];
+  var seenRuleIdentities = {};
 
   addSuffixRulesIfNotExists(
     ruleLines,
@@ -1325,7 +1365,7 @@ function haveSameStrings(values, expectedValues) {
   return true;
 }
 
-// 验证关键 AI 家宽与媒体组选区规则目标，避免静默泄漏或错误地区回退。
+// 验证关键 AI 家宽、链式浏览器与媒体组选区规则目标，避免静默泄漏或错误地区回退。
 function validateManagedRouting(config, routingTargets) {
   var i;
   var relayProxy;
@@ -1334,6 +1374,7 @@ function validateManagedRouting(config, routingTargets) {
   var mediaGroup;
   var expectedChainMembers = [BASE.nodeNames.transit, BASE.nodeNames.relay];
   var strictValidationTargets = buildStrictValidationTargets();
+  var browserValidationTargets = buildBrowserValidationTargets();
   var mediaValidationTargets = buildMediaValidationTargets();
 
   if (routingTargets.strictAiTarget !== routingTargets.chainGroupName) {
@@ -1406,6 +1447,15 @@ function validateManagedRouting(config, routingTargets) {
       config.rules,
       strictValidationTargets[i].type,
       strictValidationTargets[i].value,
+      routingTargets.strictAiTarget
+    );
+  }
+
+  for (i = 0; i < browserValidationTargets.length; i++) {
+    assertManagedRuleTarget(
+      config.rules,
+      browserValidationTargets[i].type,
+      browserValidationTargets[i].value,
       routingTargets.strictAiTarget
     );
   }

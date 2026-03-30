@@ -58,6 +58,10 @@ const EXPECTED = {
     "PROCESS-NAME,Perplexity Helper,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Cursor,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Cursor Helper,🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,ChatGPTHelper,🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,Claude Helper (Renderer),🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,Claude Helper (GPU),🇸🇬|新加坡-链式代理-家宽IP出口",
+    "PROCESS-NAME,Claude Helper (Plugin),🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Antigravity.app,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,Quotio.app,🇸🇬|新加坡-链式代理-家宽IP出口",
     "PROCESS-NAME,claude,🇸🇬|新加坡-链式代理-家宽IP出口",
@@ -321,6 +325,10 @@ function assertCoreStrictRouting(output) {
     "DOMAIN-SUFFIX,perplexity.ai," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,google.com," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Claude," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,Claude Helper (Renderer)," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,Claude Helper (GPU)," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,Claude Helper (Plugin)," + EXPECTED.chainGroupName,
+    "PROCESS-NAME,ChatGPTHelper," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Antigravity.app," + EXPECTED.chainGroupName,
     "PROCESS-NAME,Quotio.app," + EXPECTED.chainGroupName,
     "PROCESS-NAME,claude," + EXPECTED.chainGroupName,
@@ -343,6 +351,27 @@ function assertMediaRouting(output) {
     "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
     "DOMAIN-SUFFIX,x.com," + EXPECTED.chainGroupName
   ]);
+}
+
+function assertBrowserRouting(output) {
+  assertProcessRules(
+    output,
+    true,
+    EXPECTED.process.browserManaged,
+    EXPECTED.chainGroupName
+  );
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.browserManaged,
+    EXPECTED.mediaGroupName
+  );
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.browserExcluded,
+    EXPECTED.chainGroupName
+  );
 }
 
 // 域内办公域名只走 DIRECT，不再依赖进程规则。
@@ -420,30 +449,14 @@ function testDefaultConfig() {
   const sandbox = result.sandbox;
   const output = result.output;
 
-  assert.strictEqual(sandbox.USER_OPTIONS.enableBrowserProcessProxy, true);
+  assert.strictEqual(sandbox.USER_OPTIONS.enableChainRegionBrowserProcessProxy, true);
+  assert.strictEqual(sandbox.USER_OPTIONS.enableChainRegionAiCliProcessProxy, true);
   assert.strictEqual(output._miya, undefined);
   assertManagedProxyTopology(output, EXPECTED.relayGroupName);
 
   assertCoreStrictRouting(output);
   assertMediaRouting(output);
-  assertProcessRules(
-    output,
-    true,
-    EXPECTED.process.browserManaged,
-    EXPECTED.mediaGroupName
-  );
-  assertProcessRules(
-    output,
-    false,
-    EXPECTED.process.browserExcluded,
-    EXPECTED.mediaGroupName
-  );
-  assertProcessRules(
-    output,
-    false,
-    EXPECTED.process.browserManaged,
-    EXPECTED.chainGroupName
-  );
+  assertBrowserRouting(output);
   assertDomesticDirectCoverage(output, sandbox);
   assertOverseasAppDirectCoverage(output, sandbox);
   assertDnsAndSniffer(output, sandbox);
@@ -453,20 +466,20 @@ function testDefaultConfig() {
 
 function testDisableBrowserProcessProxy() {
   const output = runMain(null, function (sandbox) {
-    sandbox.USER_OPTIONS.enableBrowserProcessProxy = false;
+    sandbox.USER_OPTIONS.enableChainRegionBrowserProcessProxy = false;
   }).output;
 
   assertProcessRules(
     output,
     false,
     EXPECTED.process.browserManaged,
-    EXPECTED.mediaGroupName
+    EXPECTED.chainGroupName
   );
   assertProcessRules(
     output,
     false,
     EXPECTED.process.browserExcluded,
-    EXPECTED.mediaGroupName
+    EXPECTED.chainGroupName
   );
 }
 
@@ -488,7 +501,7 @@ function testAiCliProcessProxyDefaultsOn() {
 
 function testDisableAiCliProcessProxy() {
   const output = runMain(null, function (sandbox) {
-    sandbox.USER_OPTIONS.enableAiCliProcessProxy = false;
+    sandbox.USER_OPTIONS.enableChainRegionAiCliProcessProxy = false;
   }).output;
 
   assertProcessRules(
@@ -513,6 +526,28 @@ function testOnlyAiAndBrowserProcessesAreManaged() {
     EXPECTED.process.unmanagedDirect.map(function (processName) {
       return "PROCESS-NAME," + processName + ",DIRECT";
     })
+  );
+}
+
+function testLegacyProcessProxyOptionAliasesStillWork() {
+  const output = runMain(null, function (sandbox) {
+    delete sandbox.USER_OPTIONS.enableChainRegionBrowserProcessProxy;
+    delete sandbox.USER_OPTIONS.enableChainRegionAiCliProcessProxy;
+    sandbox.USER_OPTIONS.enableBrowserProcessProxy = false;
+    sandbox.USER_OPTIONS.enableAiCliProcessProxy = false;
+  }).output;
+
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.browserManaged,
+    EXPECTED.chainGroupName
+  );
+  assertProcessRules(
+    output,
+    false,
+    EXPECTED.process.aiCliManaged,
+    EXPECTED.chainGroupName
   );
 }
 
@@ -677,6 +712,7 @@ testDisableBrowserProcessProxy();
 testAiCliProcessProxyDefaultsOn();
 testDisableAiCliProcessProxy();
 testOnlyAiAndBrowserProcessesAreManaged();
+testLegacyProcessProxyOptionAliasesStillWork();
 testMissingRegionFails();
 testMissingMediaRegionFails();
 testMissingStrictTargetFails();
