@@ -318,43 +318,42 @@ function assertManagedProxyTopology(output, expectedRelayTarget) {
   );
 }
 
-// 严格链式路由必须覆盖域外 AI 主域和受管 AI 进程。
-function assertCoreStrictRouting(output) {
-  assertRulesExist(output.rules, [
-    "DOMAIN-SUFFIX,claude.ai," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,chatgpt.com," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,gemini.google.com," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,perplexity.ai," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,google.com," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude Helper (Renderer)," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude Helper (GPU)," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude Helper (Plugin)," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude Code," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Claude Code URL Handler," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,ChatGPTHelper," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Antigravity.app," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,Quotio.app," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,claude," + EXPECTED.chainGroupName,
-    "PROCESS-NAME,codex," + EXPECTED.chainGroupName
-  ]);
+// 把 CANARIES 声明展开成 "{TYPE,value,target}" 规则行。
+function buildCanaryRuleLines(canaries, target) {
+  const lines = [];
+  const domainSuffixes = canaries.domainSuffixes || [];
+  for (const domain of domainSuffixes) {
+    lines.push("DOMAIN-SUFFIX," + domain + "," + target);
+  }
+  const alwaysProcessNames = canaries.alwaysProcessNames || [];
+  for (const proc of alwaysProcessNames) {
+    lines.push("PROCESS-NAME," + proc + "," + target);
+  }
+  const cliProcessNames = canaries.cliProcessNames || [];
+  for (const proc of cliProcessNames) {
+    lines.push("PROCESS-NAME," + proc + "," + target);
+  }
+  return lines;
+}
+
+// 严格链式路由必须覆盖域外 AI 主域和受管 AI 进程。canary 期望从脚本内 CANARIES 派生。
+function assertCoreStrictRouting(output, sandbox) {
+  assertRulesExist(
+    output.rules,
+    buildCanaryRuleLines(sandbox.CANARIES.strictAi, EXPECTED.chainGroupName)
+  );
   assertRulesMissing(output.rules, [
     "DOMAIN-SUFFIX,claude.ai,DIRECT"
   ]);
 }
 
-function assertMediaRouting(output) {
-  assertRulesExist(output.rules, [
-    "DOMAIN-SUFFIX,youtube.com," + EXPECTED.mediaGroupName,
-    "DOMAIN-SUFFIX,netflix.com," + EXPECTED.mediaGroupName,
-    "DOMAIN-SUFFIX,x.com," + EXPECTED.mediaGroupName,
-    "DOMAIN-SUFFIX,telegram.org," + EXPECTED.mediaGroupName,
-    "DOMAIN-SUFFIX,discord.com," + EXPECTED.mediaGroupName
-  ]);
-  assertRulesMissing(output.rules, [
-    "DOMAIN-SUFFIX,youtube.com," + EXPECTED.chainGroupName,
-    "DOMAIN-SUFFIX,x.com," + EXPECTED.chainGroupName
-  ]);
+function assertMediaRouting(output, sandbox) {
+  const expected = buildCanaryRuleLines(sandbox.CANARIES.media, EXPECTED.mediaGroupName);
+  assertRulesExist(output.rules, expected);
+  assertRulesMissing(
+    output.rules,
+    buildCanaryRuleLines(sandbox.CANARIES.media, EXPECTED.chainGroupName)
+  );
 }
 
 function assertBrowserRouting(output) {
@@ -458,8 +457,8 @@ function testDefaultConfig() {
   assert.strictEqual(output._miya, undefined);
   assertManagedProxyTopology(output, EXPECTED.relayGroupName);
 
-  assertCoreStrictRouting(output);
-  assertMediaRouting(output);
+  assertCoreStrictRouting(output, sandbox);
+  assertMediaRouting(output, sandbox);
   assertBrowserRouting(output);
   assertDomesticDirectCoverage(output, sandbox);
   assertOverseasAppDirectCoverage(output, sandbox);

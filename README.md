@@ -2,93 +2,71 @@
 
 # 解决 Clash 分流失控：让 ChatGPT / Claude 稳定走指定家宽出口
 
-很多人用 `Clash` 跑 `ChatGPT` / `Claude` / `Gemini` 时，真正烦人的不是“能不能连上”，而是下面这些问题会不会失控：
+凌晨两点，你打开 ChatGPT，风控页面跳出来；切到 Claude，Cloudflare 验证卡住；回头查机场，节点全绿、延迟正常。看着像机场掉链子，真翻日志才发现：`api.openai.com` 的 DNS 解析跑到了境内 DoH，出口 IP 根本不是你以为的那个地区。
 
-- 有些请求莫名其妙走直连
-- `DNS` 解析跑到了错误地区
-- 规则看起来是对的，实际出口却不对
-- 应用换了别的进程名，结果分流静默失效
+这是 Clash 用户最熟悉的困扰——**表面能用，但出口经常不对**。
 
-结果就是登录异常、风控、速度波动，甚至直接不可用。
+规则看着是对的，DNS 偷偷走岔；换了台机器，某个进程的可执行名变了，分流就静默失效；给 AI 流量接了家宽 IP，结果只有一半请求走上去，剩下一半仍然从机场 IP 出。登录异常、风控、速度波动，每一次都要重新排查"到底卡在哪层"。
 
-这个仓库就是为了解决这个问题：让关键流量始终走你指定的家宽出口，不再“偶尔对、偶尔错”。
+这个仓库就是为这一层问题做的：**让关键流量稳定命中你指定的家宽出口，不再"偶尔对、偶尔错"**。
 
-如果你遇到的正是“表面能用，但出口经常不对”，这份脚本针对的就是这个场景。
+如果你在这些症状里认出自己，继续往下看。
 
-> 当前主脚本版本：`v8.12`
+> 当前主脚本版本：`v9.0`
 
-## 一句话理解
+## 它做的事情
 
-- `AI / 开发相关流量` → `chainRegion`
-- `社交 / 流媒体` → `mediaRegion`
-- `域内 / 特定应用 / 特定网络地址` → `DIRECT`
+简单说三类流量，三个去向：
 
-## 这份脚本主要做四件事
+**AI 与开发相关**走 `chainRegion` 对应的链式家宽出口。ChatGPT、Claude、Gemini、Perplexity 的主站和 API，加上 Google、Microsoft、GitHub 这些登录和支撑平台，全部收口到一跳家宽 + 一跳机场节点的链式代理。受管的浏览器（Chrome / Dia / Atlas / SunBrowser）和 `claude` / `codex` 这些 CLI 进程也按进程名强制绑定到这条链路，避免 AI 站点从浏览器或 CLI 出去时走岔。
 
-- 把域外 `AI` 服务、支撑平台，以及受管浏览器和 `AI CLI` 进程，稳定绑定到 `chainRegion` 对应的链式代理出口。
-- 把社交和流媒体域名单独绑定到 `mediaRegion` 对应的普通地区组，不再拖进家宽链路。
-- 让 `DNS`、`Sniffer` 和规则尽量使用同一套分类，减少“规则看着对，实际出口已经偏了”的情况。
-- 自动生成并维护所需的代理节点、代理组和规则，避免手工拼装越改越乱。
+**社交与流媒体**走 `mediaRegion` 对应的普通地区组。YouTube、Netflix、X、Telegram、Discord 这类不需要家宽 IP，单独走一个干净的 url-test 组，不占家宽链路。
 
-## 你会得到什么
+**域内与特定应用**固定 `DIRECT`。腾讯、阿里、字节、WPS 的办公协作走境内 DoH 直连；Tailscale、Typeless 这类域外应用也直连，但配套域外 DoH + skip-domain，避免境内 DNS 污染。还有网络地址本身的 IP-CIDR 直连。
 
-- 默认情况下，`AI`、受管浏览器和 `AI CLI` 的出口收口到 `chainRegion`，更容易稳定控制地区
-- 媒体流量单独放到 `mediaRegion`，不用再和家宽链路绑死
-- 如果订阅里已有 `节点选择` 组，脚本会把生成的 `-链式代理-跳板` 组和 `-媒体` 组同步进去
-- 缺少地区节点、规则目标不成立时直接报错，而不是静默回退
-- 仓库自带 `validate.js`，改动后可以快速做本地校验
+脚本同时接管了 DNS `nameserver-policy`、Sniffer 的 `force-domain` / `skip-domain`、`fake-ip-filter` 白名单——**让这四层用同一套分类**，而不是规则对、DNS 错、Sniffer 又是另一套。这是"表面规则正确但出口不对"问题的根源。
 
 ## 分流一览
 
-这份配置最终只把流量送到三类目标：`chainRegion`、`mediaRegion`、`DIRECT`。
+### 1. `chainRegion`——最需要收紧的一组
 
-### 1. `chainRegion`
+目标明确：AI 相关的每一次请求，都必须从你指定的家宽 IP 出去。
 
-最需要收紧的一组。目标很明确：让关键流量稳定命中指定家宽出口。
+覆盖三层：**域名**（Claude / ChatGPT / Gemini / NotebookLM / Perplexity 主站和 API，加 Google / Microsoft / GitHub 登录与下载）、**进程名**（Claude.app / ChatGPT.app / Perplexity.app / Cursor 及各自的 Electron Helper）、**CLI 可执行名**（`claude` 统一覆盖 Claude Code CLI 与 URL Handler，因为两者共用同一份二进制；加上 `codex` 和 `gemini`）。
 
-- **域外 `AI` 与支撑平台**：强制命中当前 `chainRegion` 对应的链式代理出口。当前覆盖 `Claude`、`ChatGPT`、`Gemini`、`NotebookLM`、`Perplexity`，以及 `Google`、`Microsoft`、`GitHub` 等登录、下载、开发相关平台。
-- **按进程名强制分流的 `AI` 应用**：当前维护 `Claude`、`ChatGPT`、`Perplexity`、`Cursor`，并覆盖已验证的相关 `Helper` / 精确进程名。
-- **按应用名强制分流的 `AI CLI`**：当前覆盖已验证的 `Claude Code`、`Claude Code URL Handler`、`Claude Code` 的 Unix 可执行名 `claude`，以及 `Codex`、`Gemini CLI`。
-- **按应用名强制分流的浏览器**：当前覆盖 `Dia`、`Atlas`、`Google Chrome`、`SunBrowser`，并显式覆盖 `Helper`、`Helper (Renderer)`、`Helper (GPU)`、`Helper (Plugin)`、`Helper (Alerts)`。
+受管浏览器之所以单独列一份，是因为 AI 站点大部分从浏览器访问。如果浏览器出去走的是机场 IP，域名级规则再严也拦不住——因为进程已经把握手完成了。
 
-### 2. `mediaRegion`
+### 2. `mediaRegion`——媒体独立选区
 
-媒体单独选区，和 `chainRegion` 脱钩。
+媒体流量和 `chainRegion` 脱钩。单独切 `mediaRegion` 只影响 YouTube / Netflix / X / Facebook / Instagram / Telegram / Discord 这一类，不会动到 AI 出口。
 
-- **社交与流媒体**：当前覆盖 `YouTube`、`Netflix`、`X` / `Twitter`、`Facebook`、`Instagram`、`Telegram`、`Discord` 相关域名，走 `mediaRegion` 对应的普通地区组，不进入家宽链路。
+为什么分开：家宽 IP 通常速度不如机场节点，也没必要为看剧牺牲带宽。媒体走普通地区组既能拿到地区解锁又保留速度。
 
-单独切 `mediaRegion` 时，只会影响媒体相关域名，不会改动 `AI`、`AI CLI` 和受管浏览器的出口。
+### 3. `DIRECT`——必须稳的一组
 
-### 3. `DIRECT`
+国内办公协作（腾讯、阿里、字节、WPS）走境内 DoH 直连——避免域外 DoH 把这些站点解析成远端 IP、反而变慢。Apple 走境内 DoH + fake-ip 绕过，因为 iCloud 推送对真实 IP 敏感。
 
-必须稳定直连的一组。
+Tailscale、Typeless 这类域外应用走 `DIRECT + 域外 DoH + skip-domain`——它们不适合走链式代理（会破坏 P2P 打洞），也不能用境内 DoH（会被解析错），所以固定这一组合。
 
-- **域内直连**：固定 `DIRECT`，包括域内 `AI`，以及腾讯、阿里、字节、`WPS` 的主力办公、沟通、协作域名。
-- **域外应用直连**：固定 `DIRECT + 域外 DoH + skip-domain`，当前包括 `Typeless`、`Tailscale` 等。
-- **网络地址直连**：固定 `DIRECT`。
+网络地址层面，Tailscale 的 CGNAT 网段（`100.64.0.0/10`）、魔法 DNS（`100.100.100.100`）、IPv6 ULA（`fd7a:115c:a1e0::/48`）也走 IP-CIDR 直连。
 
 ## 快速开始
 
-### 1. 准备代理和家宽资源（可选）
+### 1. 准备代理和家宽资源
 
-你需要两类资源：
+两类资源：
 
 - 一个代理订阅
-- 一个家宽 `IP` 服务，用于链式出口
+- 一个家宽 IP 服务，用作链式出口
 
-如果你已经有自己的资源，直接替换即可。下面只是示例：
-
+已有自己的资源直接替换。示例：
 - 代理订阅示例：[办公娱乐好帮手](https://xn--9kq10e0y7h.site/index.html?register=twb6RIec)
 - 家宽资源示例：[MiyaIP](https://www.miyaip.com/?invitecode=7670643)
 
 ### 2. 准备两份覆写脚本
 
-你需要两份脚本：
-
-1. [`MiyaIP 凭证.js`](src/MiyaIP%20%E5%87%AD%E8%AF%81.js)
-2. [`家宽IP-链式代理.js`](src/%E5%AE%B6%E5%AE%BDIP-%E9%93%BE%E5%BC%8F%E4%BB%A3%E7%90%86.js)
-
-其中，`MiyaIP 凭证.js` 负责向 `config._miya` 注入凭证；`家宽IP-链式代理.js` 负责生成链式节点、媒体组选区和分流规则。
+- [`MiyaIP 凭证.js`](src/MiyaIP%20%E5%87%AD%E8%AF%81.js)——向 `config._miya` 注入凭证。
+- [`家宽IP-链式代理.js`](src/%E5%AE%B6%E5%AE%BDIP-%E9%93%BE%E5%BC%8F%E4%BB%A3%E7%90%86.js)——生成链式节点、媒体组、分流规则。
 
 ### 3. 填好凭证脚本
 
@@ -119,13 +97,13 @@ function main(config) {
 1. `MiyaIP 凭证.js`
 2. `家宽IP-链式代理.js`
 
-顺序不能反。主脚本运行时会直接读取 `config._miya`，凭证脚本如果放在后面，脚本会直接报错。
+顺序不能反——主脚本运行时会直接读 `config._miya`，凭证脚本排在后面会导致启动即报错。
 
-![Clash Party 覆写页面](img/Clash%20Party%20覆写.png)
+![Clash Party 覆写页面](img/Clash%20Party%20覆写.jpg)
 
 ### 5. 按场景调整参数
 
-大多数情况下，你只需要改下面四个入口参数：
+多数情况下只需要改这四个入口参数：
 
 ```javascript
 var USER_OPTIONS = {
@@ -136,48 +114,39 @@ var USER_OPTIONS = {
 };
 ```
 
-常见使用方式：
-
-- 想让 `ChatGPT` 看起来在美国 → `chainRegion: "US"`
-- 想让 `Claude` 看起来在日本 → `chainRegion: "JP"`
-- 想刷 `Netflix` 美区 → `mediaRegion: "US"`
-- 想让 `AI` 用日本、媒体用美国 → `chainRegion: "JP"`，`mediaRegion: "US"`
-- 不想让受管浏览器按应用名强制走 `chainRegion` → `enableChainRegionBrowserProcessProxy: false`
-- 不想让 `AI CLI` 按应用名强制走 `chainRegion` → `enableChainRegionAiCliProcessProxy: false`
-
-脚本仍兼容旧参数名 `enableBrowserProcessProxy` 和 `enableAiCliProcessProxy`。新配置建议直接使用带 `ChainRegion` 的新命名，含义更直观。
+- ChatGPT 看起来在美国：`chainRegion: "US"`
+- Claude 看起来在日本：`chainRegion: "JP"`
+- 刷 Netflix 美区：`mediaRegion: "US"`
+- AI 用日本、媒体用美国：`chainRegion: "JP"`，`mediaRegion: "US"`
+- 不想让浏览器按进程名强制走 `chainRegion`：`enableChainRegionBrowserProcessProxy: false`
+- 不想让 AI CLI 按可执行名强制走 `chainRegion`：`enableChainRegionAiCliProcessProxy: false`
 
 ### 6. 启用并确认结果
 
-- 在 `Clash Party` 里启用这两个覆写
-- 切回机场配置并启动代理
-- 确认使用规则模式和 `TUN` 模式
-- 如果订阅里已有 `节点选择` 组，脚本会把当前 `chainRegion` 对应的 `-链式代理-跳板` 组，以及当前 `mediaRegion` 对应的 `-媒体` 组自动放进去
-- 默认配置下，如果订阅里已有 `节点选择` 组，你会看到 `🇸🇬|新加坡-链式代理-跳板` 和 `🇺🇸|美国-媒体`
-- 同时还会生成当前 `chainRegion` 对应的 `-链式代理-家宽IP出口` 组
+启用两个覆写 → 切到机场配置 → 启动代理 → 确认规则模式 + TUN 模式已开。
 
-这里显示的地区名称由 `chainRegion` 和 `mediaRegion` 决定，不是写死的。比如把 `chainRegion` 改成 `HK`、`mediaRegion` 保持 `US`，那么 `节点选择` 里会同时出现 `🇭🇰|香港-链式代理-跳板` 和 `🇺🇸|美国-媒体`。
+默认配置下如果订阅里有 `节点选择` 组，你会看到：
 
-日常使用时，建议在 `节点选择` 里手动选中当前地区对应的链式跳板组；媒体流量会由规则直接命中对应的 `-媒体` 组。
+- `🇸🇬|新加坡-链式代理.跳板`（当前 `chainRegion` 对应的跳板）
+- `🇺🇸|美国-媒体`（当前 `mediaRegion` 对应的媒体组）
 
-![Clash Party 代理组页面](img/Clash%20Party%20代理组.png)
+加上新生成的 `🇸🇬|新加坡-链式代理.家宽IP出口`（家宽出口组）。
 
-## 适合谁用
+地区名不是写死的——改 `chainRegion: "HK"`、保持 `mediaRegion: "US"`，下次加载会自动变成 `🇭🇰|香港-链式代理-跳板` 和 `🇺🇸|美国-媒体`。
 
-- 经常使用 `ChatGPT`、`Claude`、`Gemini` 等域外 `AI` 服务的用户
-- 对代理稳定性要求较高，不接受“偶尔能用、偶尔跑偏”的用户
-- 已经在使用 `Clash` 或 `Clash Party` 的用户
-- 能接受简单配置，但不想手工维护大量规则的用户
+日常使用时，在 `节点选择` 里手动选中当前地区对应的跳板组；媒体流量由规则直接命中 `-媒体` 组，不用手选。
 
-## 不适合谁用
+![Clash Party 代理组页面](img/Clash%20Party%20代理组.jpg)
 
-- 只想开全局代理，不关心具体出口地区的用户
-- 没有家宽 `IP` 资源，也不打算做链式代理的用户
-- 不使用 `Clash Party`，或者不准备维护脚本覆写的用户
+## 你是不是它的用户
+
+**适合你，如果**——经常用域外 AI 服务、对代理稳定性敏感、已经在用 Clash 或 Clash Party、愿意导入两份脚本但不想手写规则。
+
+**不适合你，如果**——只想一键全局代理不关心地区、没有家宽 IP 资源也没打算租一个、不使用 Clash Party。
 
 ## 本地校验
 
-改完规则之后，先跑一遍本地校验：
+改完规则之后，先跑一遍：
 
 ```bash
 node tests/validate.js
@@ -185,13 +154,19 @@ node tests/validate.js
 
 ## 常见问题
 
-- **报错“缺少 `config._miya`”**：先检查覆写导入顺序。`MiyaIP 凭证.js` 必须排在主脚本前面，而且文件里确实已经写入了凭证。
-- **报错找不到可用地区跳板**：说明当前 `chainRegion` 没有匹配到可用地区节点。先确认订阅里确实有这个地区，再看节点命名能不能被脚本识别。
-- **报错找不到可用媒体节点**：说明当前 `mediaRegion` 没有匹配到可用地区节点。先确认订阅里确实有这个地区，再看节点命名能不能被脚本识别。
-- **节点选择里没有看到 `-链式代理-跳板` 或 `-媒体` 组**：先确认你用的是最新版本的 `家宽IP-链式代理.js`，然后重新加载覆写。脚本只会把当前 `chainRegion` 对应的跳板组和当前 `mediaRegion` 对应的媒体组同步到已存在的 `节点选择` 组；如果你的订阅没有这个组，脚本不会额外新建。
-- **出口不符合预期**：先看凭证和中转信息，再看当前地区的家宽出口组、跳板组和媒体组有没有生成正确。偏差大多出在这几层。
-- **为什么还保留部分域外应用直连**：这类对象本来就不适合走家宽链式代理，但解析也不能随手落回域内，所以会固定成 `DIRECT + 域外 DoH + skip-domain`。
-- **为什么 `Claude Code` 要同时维护多个进程名**：本地实测里，`/Users/az/.local/bin/claude` 最终指向同一份 `Claude Code` 二进制；`Claude Code URL Handler.app` 只是另一层启动入口，负责声明 `claude-cli:` URL scheme。`LaunchServices` 会把它注册成 `Claude Code URL Handler`，而高频轮询运行态时稳定可见的 Unix 进程名仍是 `claude`，深链触发时还能短暂看到版本化二进制路径本身。脚本因此同时保留 `Claude Code`、`Claude Code URL Handler` 和 `claude` 三种入口，而不额外维护没有运行态证据的别名。
+- **报错与启动**
+
+	- **缺少 `config._miya`**——覆写导入顺序反了。`MiyaIP 凭证.js` 必须排在主脚本前面，且文件里已经写入真实凭证。
+	- **找不到可用地区跳板 / 媒体节点**——当前 `chainRegion` / `mediaRegion` 没有在订阅中命中任何节点。确认订阅包含该地区，并检查节点命名能否被地区正则识别（见 `BASE.regions`）。
+
+- **生成结果不符合预期**
+
+	- **`节点选择` 里没有 `-链式代理-跳板` 或 `-媒体` 组**——脚本只把当前地区对应的组同步到 *已存在的* `节点选择`；订阅里若无该组，脚本不会新建。
+	- **出口地区不对**——按顺序排查：凭证与中转端点 → 当前地区的家宽出口组、跳板组、媒体组是否生成 → dialer-proxy 绑定是否到位。偏差多在这几层。
+
+- **设计选择**
+
+	- **为什么域外应用保留直连**——Tailscale、Typeless 这类本就不适合走家宽链式代理，但境内 DoH 解析它们不稳定，所以固定成 `DIRECT + 域外 DoH + skip-domain`。
 
 ## 兼容性
 
