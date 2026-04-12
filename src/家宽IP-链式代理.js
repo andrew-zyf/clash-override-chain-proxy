@@ -1,47 +1,45 @@
-/**
- * Clash 家宽IP-链式代理覆写脚本
- *
- * 作用：
- * 1. 注入 MiyaIP 链式代理节点、AI 家宽出口组，以及媒体地区组。
- * 2. 把域外 AI、支撑平台、AI CLI 与受管浏览器稳定绑定到 `chainRegion` 出口。
- * 3. 把社交和流媒体绑定到 `mediaRegion`，与家宽链路脱钩。
- * 4. 覆写 DNS、Sniffer 和 DIRECT 保留规则，并在收尾阶段校验关键目标。
- *
- * 架构（自顶向下）：
- *   USER_OPTIONS     用户可调参数
- *   BASE             运行期常量（地区、节点名、组名后缀、DNS、规则前缀）
- *   SOURCE_*         原始分类的裸 `+.domain` 列表。按路由意图拆成顶层常量：
- *                    - SOURCE_APPLE
- *                    - SOURCE_CHAIN_PLATFORM / SOURCE_CHAIN_AI
- *                    - SOURCE_MEDIA
- *                    - SOURCE_DIRECT_DOMESTIC_AI / SOURCE_DIRECT_DOMESTIC_OFFICE
- *                    - SOURCE_DIRECT_OVERSEAS_APPS
- *                    - SOURCE_AI_EGRESS_VALIDATION
- *                    - SOURCE_SNIFFER_FORCE_BASE / SOURCE_SNIFFER_SKIP_BASE
- *   SOURCE_PROCESSES / SOURCE_NETWORK_RULES  进程与网络地址
- *   EXPECTED_ROUTES  路由样本表（toChain/toMedia），派生校验目标与测试期望
- *   POLICY           策略表：pattern + route/dnsZone/sniffer/fakeIp/fallbackFilter
- *                    所有派生视图（strict/general/direct/sniffer）均从 POLICY 投影
- *   DERIVED          从 POLICY 投影出的数据视图（patterns + processNames + networkRules），
- *                    供下面的 build-/write- 系函数直接读取
- *   builder/writer/resolver/assert  按动词前缀系统化：
- *     build*         纯产出（返回值，无副作用）
- *     resolve*       读取并计算（可能触发幂等写入作为副产物）
- *     write*         写入 config（副作用为主）
- *     assert*        运行期断言
- *   main(config)     装配顺序：容器初始化 → DNS/Sniffer → MiyaIP 节点 →
- *                    路由目标解析 → 规则写入 → 校验
- *
- * 依赖：
- * - 需先执行 `MiyaIP 凭证.js`，向 `config._miya` 注入凭证。
- *
- * 兼容性：
- * - 运行环境为 Clash Party 的 JavaScriptCore。
- * - 使用 ES5 语法，不依赖箭头函数、解构赋值、模板字符串、
- *   展开语法、`Object.values()`、`Object.fromEntries()` 等 ES6+ 特性。
- *
- * @version 9.0
- */
+// Clash 家宽IP-链式代理覆写脚本
+//
+// 作用：
+// 1. 注入 MiyaIP 链式代理节点、AI 家宽出口组，以及媒体地区组。
+// 2. 把域外 AI、支撑平台、AI CLI 与受管浏览器稳定绑定到 `chainRegion` 出口。
+// 3. 把社交和流媒体绑定到 `mediaRegion`，与家宽链路脱钩。
+// 4. 覆写 DNS、Sniffer 和 DIRECT 保留规则，并在收尾阶段校验关键目标。
+//
+// 架构（自顶向下）：
+//   USER_OPTIONS     用户可调参数
+//   BASE             运行期常量（地区、节点名、组名后缀、DNS、规则前缀）
+//   SOURCE_*         原始分类的裸 `+.domain` 列表。按路由意图拆成顶层常量：
+//                    - SOURCE_APPLE
+//                    - SOURCE_CHAIN_PLATFORM / SOURCE_CHAIN_AI
+//                    - SOURCE_MEDIA
+//                    - SOURCE_DIRECT_DOMESTIC_AI / SOURCE_DIRECT_DOMESTIC_OFFICE
+//                    - SOURCE_DIRECT_OVERSEAS_APPS
+//                    - SOURCE_AI_EGRESS_VALIDATION
+//                    - SOURCE_SNIFFER_FORCE_BASE / SOURCE_SNIFFER_SKIP_BASE
+//   SOURCE_PROCESSES / SOURCE_NETWORK_RULES  进程与网络地址
+//   EXPECTED_ROUTES  路由样本表（toChain/toMedia），派生校验目标与测试期望
+//   POLICY           策略表：pattern + route/dnsZone/sniffer/fakeIp/fallbackFilter
+//                    所有派生视图（strict/general/direct/sniffer）均从 POLICY 投影
+//   DERIVED          从 POLICY 投影出的数据视图（patterns + processNames + networkRules），
+//                    供下面的 build-/write- 系函数直接读取
+//   builder/writer/resolver/assert  按动词前缀系统化：
+//     build*         纯产出（返回值，无副作用）
+//     resolve*       读取并计算（可能触发幂等写入作为副产物）
+//     write*         写入 config（副作用为主）
+//     assert*        运行期断言
+//   main(config)     装配顺序：容器初始化 → DNS/Sniffer → MiyaIP 节点 →
+//                    路由目标解析 → 规则写入 → 校验
+//
+// 依赖：
+// - 需先执行 `MiyaIP 凭证.js`，向 `config._miya` 注入凭证。
+//
+// 兼容性：
+// - 运行环境为 Clash Party 的 JavaScriptCore。
+// - 使用 ES5 语法，不依赖箭头函数、解构赋值、模板字符串、
+//   展开语法、`Object.values()`、`Object.fromEntries()` 等 ES6+ 特性。
+//
+// @version 9.0
 
 // ---------------------------------------------------------------------------
 // 用户可调参数
