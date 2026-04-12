@@ -10,12 +10,20 @@
  * 架构（自顶向下）：
  *   USER_OPTIONS     用户可调参数
  *   BASE             运行期常量（地区、节点名、组名后缀、DNS、规则前缀）
- *   SOURCE_PATTERNS  原始分类的裸 `+.domain` 列表（按业务分组）
+ *   SOURCE_*         原始分类的裸 `+.domain` 列表。按路由意图拆成顶层常量：
+ *                    - SOURCE_APPLE
+ *                    - SOURCE_CHAIN_PLATFORM / SOURCE_CHAIN_AI
+ *                    - SOURCE_MEDIA
+ *                    - SOURCE_DIRECT_DOMESTIC_AI / SOURCE_DIRECT_DOMESTIC_OFFICE
+ *                    - SOURCE_DIRECT_OVERSEAS_APPS
+ *                    - SOURCE_AI_EGRESS_VALIDATION
+ *                    - SOURCE_SNIFFER_FORCE_BASE / SOURCE_SNIFFER_SKIP_BASE
  *   SOURCE_PROCESSES / SOURCE_NETWORK_RULES  进程与网络地址
- *   CANARIES         校验金丝雀（strictAi/media），派生校验目标与测试期望
+ *   EXPECTED_ROUTES  路由样本表（toChain/toMedia），派生校验目标与测试期望
  *   POLICY           策略表：pattern + route/dnsZone/sniffer/fakeIp/fallbackFilter
  *                    所有派生视图（strict/general/direct/sniffer）均从 POLICY 投影
- *   DERIVED          消费者直接读取的入口（patterns + processNames + networkRules）
+ *   DERIVED          从 POLICY 投影出的数据视图（patterns + processNames + networkRules），
+ *                    供下面的 build*/write* 函数直接读取
  *   builder/writer/resolver/assert  按动词前缀系统化：
  *     build*         纯产出（返回值，无副作用）
  *     resolve*       读取并计算（可能触发幂等写入作为副产物）
@@ -42,8 +50,8 @@
 var USER_OPTIONS = {
   chainRegion: "SG", // AI 家宽出口前一跳地区，可选 US / JP / HK / SG
   mediaRegion: "US", // 媒体默认地区，可选 US / JP / HK / SG
-  enableChainRegionBrowserProcessProxy: true, // 是否让受管浏览器按应用名继续强制走 chainRegion
-  enableChainRegionAiCliProcessProxy: true // 是否让常见 AI CLI 按应用名继续强制走 chainRegion
+  routeBrowserToChain: true, // 是否让受管浏览器按应用名继续强制走 chainRegion
+  routeAiCliToChain: true // 是否让常见 AI CLI 按应用名继续强制走 chainRegion
 };
 
 // ---------------------------------------------------------------------------
@@ -73,7 +81,6 @@ var BASE = {
   },
   urlTestProbeUrl: "http://www.gstatic.com/generate_204",
   miyaProxyNameKeyword: "MiyaIP",
-  errorPrefix: "[家宽IP-链式代理] ",
   groupNameSuffixes: {
     relay: "-链式代理.跳板",
     chain: "-链式代理.家宽IP出口",
@@ -96,256 +103,265 @@ var BASE = {
 BASE.dns.fallback = BASE.dns.overseas.concat(["https://dns.quad9.net/dns-query"]);
 
 // ---------------------------------------------------------------------------
-// 原始分类数据源
+// 模式字面量（SOURCE_*）
 // ---------------------------------------------------------------------------
 
-// 原始业务分类：每组裸 `+.domain` 模式，按业务可读性分组。路由/DNS/sniffer 语义在 POLICY 层
-// 注入，这里只维护"谁属于哪个业务桶"。转成规则时由 `toSuffix` 去掉 `+.` 前缀。
-var SOURCE_PATTERNS = {
-  apple: {
-    core: [
-      "+.apple.com",
-      "+.icloud.com"
-    ],
-    content: [
-      "+.icloud-content.com",
-      "+.mzstatic.com",
-      "+.cdn-apple.com",
-      "+.aaplimg.com"
-    ],
-    services: ["+.apple-cloudkit.com"]
-  },
-  chain: {
-    platform: {
-      google_core: [
-        "+.google.com",
-        "+.googleapis.com",
-        "+.googleusercontent.com"
-      ],
-      google_static: [
-        "+.gstatic.com",
-        "+.ggpht.com",
-        "+.gvt1.com",
-        "+.gvt2.com"
-      ],
-      google_workspace: ["+.withgoogle.com"], // `googleworkspace.com` 证据不足，先不默认注入
-      google_cloud: [
-        "+.cloud.google.com"
-      ],
-      microsoft_core: [
-        "+.microsoft.com",
-        "+.live.com",
-        "+.windows.net"
-      ], // `windows.net` 作为 Microsoft 官方基础设施宽域名保留
-      microsoft_productivity: [
-        "+.office.com",
-        "+.office.net",
-        "+.office365.com",
-        "+.m365.cloud.microsoft",
-        "+.sharepoint.com",
-        "+.onenote.com",
-        "+.onedrive.com"
-      ],
-      microsoft_auth: [
-        "+.microsoftonline.com",
-        "+.msftauth.net",
-        "+.msauth.net",
-        "+.msecnd.net"
-      ],
-      microsoft_developer: [
-        "+.visualstudio.com",
-        "+.vsassets.io",
-        "+.vsmarketplacebadges.dev"
-      ], // Microsoft 开发者与 VS Code 生态基础设施
-      developer: [
-        "+.github.com"
-      ]
-    },
-    ai: {
-      anthropic: [
-        "+.claude.ai",
-        "+.claude.com",
-        "+.anthropic.com",
-        "+.claudeusercontent.com",
-        "+.clau.de" // Anthropic 官方场景使用过的短链
-      ],
-      openai: [
-        "+.openai.com",
-        "+.chatgpt.com",
-        "+.sora.com",
-        "+.oaiusercontent.com", // OpenAI 官方静态资源与内容分发基础设施
-        "+.oaistatic.com"
-      ],
-      google_ai: [
-        "+.gemini.google.com",
-        "+.aistudio.google.com",
-        "+.ai.google.dev",
-        "+.generativelanguage.googleapis.com",
-        "+.ai.google",
-        "+.notebooklm.google",
-        "+.makersuite.google.com", // 历史兼容入口，Google 已迁移到 AI Studio
-        "+.deepmind.google",
-        "+.labs.google"
-      ],
-      google_antigravity: [
-        "+.antigravity.google",
-        "+.antigravity-ide.com" // Antigravity IDE 的非 google 子域资源站
-      ],
-      perplexity: [
-        "+.perplexity.ai",
-        "+.perplexitycdn.com" // Perplexity 资源分发域名
-      ],
-      router_and_tools: [
-        "+.openrouter.ai"
-      ],
-      xai: [
-        "+.x.ai",
-        "+.grok.com"
-      ],
-      immersivetranslate: [
-        "+.immersivetranslate.com"
-      ]
-    },
-    media: {
-      youtube: [
-        "+.youtube.com",
-        "+.googlevideo.com",
-        "+.ytimg.com",
-        "+.youtube-nocookie.com",
-        "+.yt.be"
-      ],
-      netflix: [
-        "+.netflix.com",
-        "+.netflix.net",
-        "+.nflxvideo.net",
-        "+.nflxso.net",
-        "+.nflximg.net",
-        "+.nflximg.com",
-        "+.nflxext.com"
-      ],
-      twitter: [
-        "+.twitter.com",
-        "+.x.com",
-        "+.twimg.com",
-        "+.t.co"
-      ],
-      facebook: [
-        "+.facebook.com",
-        "+.fbcdn.net",
-        "+.fb.com",
-        "+.facebook.net",
-        "+.instagram.com",
-        "+.cdninstagram.com"
-      ],
-      telegram: [
-        "+.telegram.org",
-        "+.t.me",
-        "+.telegra.ph",
-        "+.telesco.pe"
-      ],
-      discord: [
-        "+.discord.com",
-        "+.discord.gg",
-        "+.discordapp.com",
-        "+.discordapp.net",
-        "+.discord.media"
-      ]
-    }
-  },
-  direct: {
-    domestic: {
-      ai: {
-        tongyi: [
-          "+.tongyi.aliyun.com",
-          "+.qianwen.aliyun.com",
-          "+.dashscope.aliyuncs.com"
-        ],
-        moonshot: [
-          "+.moonshot.cn"
-        ],
-        zhipu: [
-          "+.chatglm.cn",
-          "+.zhipuai.cn",
-          "+.bigmodel.cn"
-        ],
-        siliconflow: [
-          "+.siliconflow.cn"
-        ]
-      },
-      office: {
-        tencent_messaging_and_collab: [
-          "+.qq.com",
-          "+.qqmail.com",
-          "+.exmail.qq.com",
-          "+.weixin.qq.com",
-          "+.work.weixin.qq.com",
-          "+.docs.qq.com",
-          "+.meeting.tencent.com",
-          "+.tencentcloud.com",
-          "+.cloud.tencent.com"
-        ],
-        alibaba_productivity: [
-          "+.dingtalk.com",
-          "+.dingtalkapps.com",
-          "+.aliyundrive.com",
-          "+.quark.cn",
-          "+.teambition.com",
-          "+.aliyun.com",
-          "+.aliyuncs.com",
-          "+.alibabacloud.com"
-        ],
-        bytedance_productivity: [
-          "+.feishu.cn",
-          "+.feishu.net",
-          "+.feishucdn.com",
-          "+.larksuite.com",
-          "+.larkoffice.com"
-        ],
-        wps_productivity: [
-          "+.wps.cn",
-          "+.wps.com",
-          "+.kdocs.cn",
-          "+.kdocs.com"
-        ]
-      }
-    },
-    overseasApps: {
-      tailscale: [
-        "+.tailscale.com",
-        "+.tailscale.io",
-        "+.ts.net"
-      ],
-      typeless: [
-        "+.typeless.com"
-      ]
-    }
-  },
-  policy: {
-    // 这些域名被刻意路由到 AI 家宽出口，用于核验出口 IP（ping0.cc / ipinfo.io）
-    // 或覆盖 AI 常用的 CF CDN 子域（cdn.cloudflare.net）。它们同时通过 strict.all 参与
-    // DNS overseas 解析与 fake-ip fallback 过滤。
-    //
-    // 注意：`+.cdn.cloudflare.net` 只覆盖 Cloudflare 官方基础设施子域（如 workers.dev 回源、R2），
-    // 不会波及普通 CF 前置的第三方网站——第三方站点通常以自有域名 fronted，DNS 不命中
-    // `cdn.cloudflare.net`。这是"为 AI 出口让路"的小范围策略，不会显著影响域内访问普通 CF 站点。
-    aiEgressValidation: [
-      "+.cdn.cloudflare.net",
-      "+.ping0.cc",
-      "+.ipinfo.io"
-    ],
-    snifferForceBase: [
-      "+.cloudflare.com",
-      "+.cdn.cloudflare.net"
-    ],
-    snifferSkipBase: [
-      "+.push.apple.com",
-      "+.apple.com",
-      "+.lan",
-      "+.local",
-      "+.localhost"
-    ]
-  }
+// 按路由意图拆成若干顶层常量，每块就是一个语义桶。
+// 路由 / DNS / sniffer 等行为在下面的 POLICY 层统一注入，这里只维护"谁属于哪个业务桶"。
+// 转成规则时由 `toSuffix` 去掉 `+.` 前缀。
+
+// ---------- Apple（fake-ip 绕过 + 境内 DoH，无路由规则） ----------
+var SOURCE_APPLE = {
+  core: [
+    "+.apple.com",
+    "+.icloud.com"
+  ],
+  content: [
+    "+.icloud-content.com",
+    "+.mzstatic.com",
+    "+.cdn-apple.com",
+    "+.aaplimg.com"
+  ],
+  services: ["+.apple-cloudkit.com"]
 };
+
+// ---------- Chain · 支撑平台（AI 登录 / 开发 / 文档） ----------
+var SOURCE_CHAIN_PLATFORM = {
+  google_core: [
+    "+.google.com",
+    "+.googleapis.com",
+    "+.googleusercontent.com"
+  ],
+  google_static: [
+    "+.gstatic.com",
+    "+.ggpht.com",
+    "+.gvt1.com",
+    "+.gvt2.com"
+  ],
+  google_workspace: ["+.withgoogle.com"], // `googleworkspace.com` 证据不足，先不默认注入
+  google_cloud: [
+    "+.cloud.google.com"
+  ],
+  microsoft_core: [
+    "+.microsoft.com",
+    "+.live.com",
+    "+.windows.net"
+  ], // `windows.net` 作为 Microsoft 官方基础设施宽域名保留
+  microsoft_productivity: [
+    "+.office.com",
+    "+.office.net",
+    "+.office365.com",
+    "+.m365.cloud.microsoft",
+    "+.sharepoint.com",
+    "+.onenote.com",
+    "+.onedrive.com"
+  ],
+  microsoft_auth: [
+    "+.microsoftonline.com",
+    "+.msftauth.net",
+    "+.msauth.net",
+    "+.msecnd.net"
+  ],
+  microsoft_developer: [
+    "+.visualstudio.com",
+    "+.vsassets.io",
+    "+.vsmarketplacebadges.dev"
+  ], // Microsoft 开发者与 VS Code 生态基础设施
+  developer: [
+    "+.github.com"
+  ]
+};
+
+// ---------- Chain · AI 服务本身 ----------
+var SOURCE_CHAIN_AI = {
+  anthropic: [
+    "+.claude.ai",
+    "+.claude.com",
+    "+.anthropic.com",
+    "+.claudeusercontent.com",
+    "+.clau.de" // Anthropic 官方场景使用过的短链
+  ],
+  openai: [
+    "+.openai.com",
+    "+.chatgpt.com",
+    "+.sora.com",
+    "+.oaiusercontent.com", // OpenAI 官方静态资源与内容分发基础设施
+    "+.oaistatic.com"
+  ],
+  google_ai: [
+    "+.gemini.google.com",
+    "+.aistudio.google.com",
+    "+.ai.google.dev",
+    "+.generativelanguage.googleapis.com",
+    "+.ai.google",
+    "+.notebooklm.google",
+    "+.makersuite.google.com", // 历史兼容入口，Google 已迁移到 AI Studio
+    "+.deepmind.google",
+    "+.labs.google"
+  ],
+  google_antigravity: [
+    "+.antigravity.google",
+    "+.antigravity-ide.com" // Antigravity IDE 的非 google 子域资源站
+  ],
+  perplexity: [
+    "+.perplexity.ai",
+    "+.perplexitycdn.com" // Perplexity 资源分发域名
+  ],
+  router_and_tools: [
+    "+.openrouter.ai"
+  ],
+  xai: [
+    "+.x.ai",
+    "+.grok.com"
+  ],
+  immersivetranslate: [
+    "+.immersivetranslate.com"
+  ]
+};
+
+// ---------- Media（独立地区组，不走家宽链路） ----------
+var SOURCE_MEDIA = {
+  youtube: [
+    "+.youtube.com",
+    "+.googlevideo.com",
+    "+.ytimg.com",
+    "+.youtube-nocookie.com",
+    "+.yt.be"
+  ],
+  netflix: [
+    "+.netflix.com",
+    "+.netflix.net",
+    "+.nflxvideo.net",
+    "+.nflxso.net",
+    "+.nflximg.net",
+    "+.nflximg.com",
+    "+.nflxext.com"
+  ],
+  twitter: [
+    "+.twitter.com",
+    "+.x.com",
+    "+.twimg.com",
+    "+.t.co"
+  ],
+  facebook: [
+    "+.facebook.com",
+    "+.fbcdn.net",
+    "+.fb.com",
+    "+.facebook.net",
+    "+.instagram.com",
+    "+.cdninstagram.com"
+  ],
+  telegram: [
+    "+.telegram.org",
+    "+.t.me",
+    "+.telegra.ph",
+    "+.telesco.pe"
+  ],
+  discord: [
+    "+.discord.com",
+    "+.discord.gg",
+    "+.discordapp.com",
+    "+.discordapp.net",
+    "+.discord.media"
+  ]
+};
+
+// ---------- Direct · 境内 AI（域内 DoH + 直连） ----------
+var SOURCE_DIRECT_DOMESTIC_AI = {
+  tongyi: [
+    "+.tongyi.aliyun.com",
+    "+.qianwen.aliyun.com",
+    "+.dashscope.aliyuncs.com"
+  ],
+  moonshot: [
+    "+.moonshot.cn"
+  ],
+  zhipu: [
+    "+.chatglm.cn",
+    "+.zhipuai.cn",
+    "+.bigmodel.cn"
+  ],
+  siliconflow: [
+    "+.siliconflow.cn"
+  ]
+};
+
+// ---------- Direct · 境内办公协作（域内 DoH + 直连） ----------
+var SOURCE_DIRECT_DOMESTIC_OFFICE = {
+  tencent_messaging_and_collab: [
+    "+.qq.com",
+    "+.qqmail.com",
+    "+.exmail.qq.com",
+    "+.weixin.qq.com",
+    "+.work.weixin.qq.com",
+    "+.docs.qq.com",
+    "+.meeting.tencent.com",
+    "+.tencentcloud.com",
+    "+.cloud.tencent.com"
+  ],
+  alibaba_productivity: [
+    "+.dingtalk.com",
+    "+.dingtalkapps.com",
+    "+.aliyundrive.com",
+    "+.quark.cn",
+    "+.teambition.com",
+    "+.aliyun.com",
+    "+.aliyuncs.com",
+    "+.alibabacloud.com"
+  ],
+  bytedance_productivity: [
+    "+.feishu.cn",
+    "+.feishu.net",
+    "+.feishucdn.com",
+    "+.larksuite.com",
+    "+.larkoffice.com"
+  ],
+  wps_productivity: [
+    "+.wps.cn",
+    "+.wps.com",
+    "+.kdocs.cn",
+    "+.kdocs.com"
+  ]
+};
+
+// ---------- Direct · 域外应用（直连 + 域外 DoH + skip-domain） ----------
+var SOURCE_DIRECT_OVERSEAS_APPS = {
+  tailscale: [
+    "+.tailscale.com",
+    "+.tailscale.io",
+    "+.ts.net"
+  ],
+  typeless: [
+    "+.typeless.com"
+  ]
+};
+
+// ---------- Policy · AI 出口验证 ----------
+// 这些域名被刻意路由到 AI 家宽出口，用于核验出口 IP（ping0.cc / ipinfo.io）
+// 或覆盖 AI 常用的 CF CDN 子域（cdn.cloudflare.net）。它们同时通过 strict.all 参与
+// DNS overseas 解析与 fake-ip fallback 过滤。
+//
+// 注意：`+.cdn.cloudflare.net` 只覆盖 Cloudflare 官方基础设施子域（如 workers.dev 回源、R2），
+// 不会波及普通 CF 前置的第三方网站——第三方站点通常以自有域名 fronted，DNS 不命中
+// `cdn.cloudflare.net`。这是"为 AI 出口让路"的小范围策略，不会显著影响域内访问普通 CF 站点。
+var SOURCE_AI_EGRESS_VALIDATION = [
+  "+.cdn.cloudflare.net",
+  "+.ping0.cc",
+  "+.ipinfo.io"
+];
+
+// ---------- Policy · Sniffer 强制 / 跳过 ----------
+var SOURCE_SNIFFER_FORCE_BASE = [
+  "+.cloudflare.com",
+  "+.cdn.cloudflare.net"
+];
+var SOURCE_SNIFFER_SKIP_BASE = [
+  "+.push.apple.com",
+  "+.apple.com",
+  "+.lan",
+  "+.local",
+  "+.localhost"
+];
 
 // 原始进程分类，目前只维护 AI 与浏览器两类——两者最终都会路由到链式代理出口。
 var SOURCE_PROCESSES = {
@@ -391,23 +407,29 @@ var SOURCE_PROCESSES = {
   }
 };
 
-// 校验金丝雀：声明运行期必须命中预期出口的具体域名/进程。校验目标与 `tests/validate.js`
-// 的期望都从这里派生，避免硬编码多处导致漂移。
-// `assertCanariesCoverage` 在加载期断言 canary 域名被源 patterns 覆盖、canary 进程在源 processNames 内。
-var CANARIES = {
-  strictAi: {
-    domainSuffixes: [
+// 路由样本：声明"这些具体的域名 / 进程必须落到这个出口"。运行期 assertRuleTargetBatch
+// 逐条核对规则命中；加载期 assertExpectedRoutesCoverage 核对样本没有脱离 SOURCE_* 源数据；
+// `tests/validate.js` 直接读 sandbox.EXPECTED_ROUTES 作为端到端期望。
+// 更新时只改这一处，校验与测试同步跟进。
+//
+// 字段：
+//   domains       以 DOMAIN-SUFFIX 命中的裸域名
+//   processNames  始终注入的进程名（受管 App）
+//   cliNames      CLI 可执行名，仅当 shouldRouteAiCliToChain() 启用时校验
+var EXPECTED_ROUTES = {
+  toChain: {
+    domains: [
       "claude.ai",
       "chatgpt.com",
       "gemini.google.com",
       "perplexity.ai",
       "google.com"
     ],
-    alwaysProcessNames: ["Claude"],
-    cliProcessNames: ["claude", "codex"] // 仅在 shouldRouteAiCliToChain() 为 true 时校验
+    processNames: ["Claude"],
+    cliNames: ["claude", "codex"]
   },
-  media: {
-    domainSuffixes: ["youtube.com", "x.com"]
+  toMedia: {
+    domains: ["youtube.com", "x.com"]
   }
 };
 
@@ -513,19 +535,18 @@ function flattenGroupedPatterns(groupedPatterns) {
   return uniqueStrings(flattenedPatterns);
 }
 
-// 为统一错误文案构建 Error 对象。
 function createUserError(message) {
-  return new Error(BASE.errorPrefix + message);
+  return new Error(message);
 }
 
 // 是否让常见 AI CLI 继续按应用名强制走 chainRegion。
 function shouldRouteAiCliToChain() {
-  return USER_OPTIONS.enableChainRegionAiCliProcessProxy !== false;
+  return USER_OPTIONS.routeAiCliToChain !== false;
 }
 
 // 是否让受管浏览器继续按应用名强制走 chainRegion。
 function shouldRouteBrowserToChain() {
-  return USER_OPTIONS.enableChainRegionBrowserProcessProxy !== false;
+  return USER_OPTIONS.routeBrowserToChain !== false;
 }
 
 // ---------------------------------------------------------------------------
@@ -552,57 +573,57 @@ function shouldRouteBrowserToChain() {
 function buildPolicy() {
   return [
     {
-      key: "apple", patterns: flattenGroupedPatterns(SOURCE_PATTERNS.apple),
+      key: "apple", patterns: flattenGroupedPatterns(SOURCE_APPLE),
       dnsZone: "domestic", fakeIpBypass: true
     },
 
     {
-      key: "chain.support", patterns: flattenGroupedPatterns(SOURCE_PATTERNS.chain.platform),
+      key: "chain.support", patterns: flattenGroupedPatterns(SOURCE_CHAIN_PLATFORM),
       route: "chain", routeBucket: "support",
       dnsZone: "overseas", sniffer: "force", fallbackFilter: true
     },
     {
-      key: "chain.ai", patterns: flattenGroupedPatterns(SOURCE_PATTERNS.chain.ai),
+      key: "chain.ai", patterns: flattenGroupedPatterns(SOURCE_CHAIN_AI),
       route: "chain", routeBucket: "ai",
       dnsZone: "overseas", sniffer: "force", fallbackFilter: true
     },
     {
       key: "chain.validation",
-      patterns: uniqueStrings(SOURCE_PATTERNS.policy.aiEgressValidation.slice()),
+      patterns: uniqueStrings(SOURCE_AI_EGRESS_VALIDATION.slice()),
       route: "chain", routeBucket: "validation",
       dnsZone: "overseas", sniffer: "force", fallbackFilter: true
     },
 
     {
-      key: "media", patterns: flattenGroupedPatterns(SOURCE_PATTERNS.chain.media),
+      key: "media", patterns: flattenGroupedPatterns(SOURCE_MEDIA),
       route: "media", dnsZone: "overseas", fallbackFilter: true
     },
 
     {
       key: "direct.overseasApps",
-      patterns: flattenGroupedPatterns(SOURCE_PATTERNS.direct.overseasApps),
+      patterns: flattenGroupedPatterns(SOURCE_DIRECT_OVERSEAS_APPS),
       route: "direct", routeBucket: "direct.overseasApps",
       dnsZone: "overseas", sniffer: "skip", fallbackFilter: true
     },
     {
       key: "direct.domestic.ai",
-      patterns: flattenGroupedPatterns(SOURCE_PATTERNS.direct.domestic.ai),
+      patterns: flattenGroupedPatterns(SOURCE_DIRECT_DOMESTIC_AI),
       route: "direct", routeBucket: "direct.domestic.ai", dnsZone: "domestic"
     },
     {
       key: "direct.domestic.office",
-      patterns: flattenGroupedPatterns(SOURCE_PATTERNS.direct.domestic.office),
+      patterns: flattenGroupedPatterns(SOURCE_DIRECT_DOMESTIC_OFFICE),
       route: "direct", routeBucket: "direct.domestic.office", dnsZone: "domestic"
     },
 
     {
       key: "sniffer.force.base",
-      patterns: uniqueStrings(SOURCE_PATTERNS.policy.snifferForceBase.slice()),
+      patterns: uniqueStrings(SOURCE_SNIFFER_FORCE_BASE.slice()),
       sniffer: "force"
     },
     {
       key: "sniffer.skip.base",
-      patterns: uniqueStrings(SOURCE_PATTERNS.policy.snifferSkipBase.slice()),
+      patterns: uniqueStrings(SOURCE_SNIFFER_SKIP_BASE.slice()),
       sniffer: "skip"
     }
   ];
@@ -741,38 +762,38 @@ function isDomainCoveredBySuffixPatterns(domain, suffixPatterns) {
   return false;
 }
 
-// 断言每个 canary 域名/进程都能在对应的 DERIVED 源集合中找到覆盖，防止校验与源头漂移。
-function assertCanariesCoverage() {
+// 断言每个样本域名 / 进程都能在对应的 DERIVED 源集合中找到覆盖，防止样本与源头漂移。
+function assertExpectedRoutesCoverage() {
   var i;
-  var canary;
+  var sample;
 
-  for (i = 0; i < CANARIES.strictAi.domainSuffixes.length; i++) {
-    canary = CANARIES.strictAi.domainSuffixes[i];
-    if (!isDomainCoveredBySuffixPatterns(canary, DERIVED.patterns.strict.all)) {
-      throw createUserError("canary 域名未被 strict 源覆盖: " + canary);
+  for (i = 0; i < EXPECTED_ROUTES.toChain.domains.length; i++) {
+    sample = EXPECTED_ROUTES.toChain.domains[i];
+    if (!isDomainCoveredBySuffixPatterns(sample, DERIVED.patterns.strict.all)) {
+      throw createUserError("route 样本未被 strict 源覆盖: " + sample);
     }
   }
 
-  for (i = 0; i < CANARIES.media.domainSuffixes.length; i++) {
-    canary = CANARIES.media.domainSuffixes[i];
-    if (!isDomainCoveredBySuffixPatterns(canary, DERIVED.patterns.general.media)) {
-      throw createUserError("canary 域名未被 media 源覆盖: " + canary);
+  for (i = 0; i < EXPECTED_ROUTES.toMedia.domains.length; i++) {
+    sample = EXPECTED_ROUTES.toMedia.domains[i];
+    if (!isDomainCoveredBySuffixPatterns(sample, DERIVED.patterns.general.media)) {
+      throw createUserError("route 样本未被 media 源覆盖: " + sample);
     }
   }
 
   var strictProcLookup = buildStringLookup(
     DERIVED.processNames.strict.base.concat(DERIVED.processNames.strict.optionalAiCli)
   );
-  var procCanaries = CANARIES.strictAi.alwaysProcessNames
-    .concat(CANARIES.strictAi.cliProcessNames);
-  for (i = 0; i < procCanaries.length; i++) {
-    if (!strictProcLookup[procCanaries[i]]) {
-      throw createUserError("canary 进程未在 strict 源中: " + procCanaries[i]);
+  var procSamples = EXPECTED_ROUTES.toChain.processNames
+    .concat(EXPECTED_ROUTES.toChain.cliNames);
+  for (i = 0; i < procSamples.length; i++) {
+    if (!strictProcLookup[procSamples[i]]) {
+      throw createUserError("route 样本进程未在 strict 源中: " + procSamples[i]);
     }
   }
 }
 
-assertCanariesCoverage();
+assertExpectedRoutesCoverage();
 
 // 把字符串数组映射为 { type, value } 规则目标列表。
 function buildValidationTargets(ruleType, values) {
@@ -783,14 +804,15 @@ function buildValidationTargets(ruleType, values) {
   return targets;
 }
 
-// 校验目标从 `CANARIES` 派生，避免校验与源数据脱钩。
+// 校验目标从 `EXPECTED_ROUTES.toChain` 派生，避免校验与源数据脱钩。
 function buildStrictValidationTargets() {
-  var validationTargets = buildValidationTargets("DOMAIN-SUFFIX", CANARIES.strictAi.domainSuffixes)
-    .concat(buildValidationTargets("PROCESS-NAME", CANARIES.strictAi.alwaysProcessNames));
+  var samples = EXPECTED_ROUTES.toChain;
+  var validationTargets = buildValidationTargets("DOMAIN-SUFFIX", samples.domains)
+    .concat(buildValidationTargets("PROCESS-NAME", samples.processNames));
   if (shouldRouteAiCliToChain()) {
     // Claude Code CLI 与 URL Handler 都以 `claude` 可执行名运行，开关一旦关闭校验也随之撤销。
     validationTargets = validationTargets.concat(
-      buildValidationTargets("PROCESS-NAME", CANARIES.strictAi.cliProcessNames)
+      buildValidationTargets("PROCESS-NAME", samples.cliNames)
     );
   }
   return validationTargets;
@@ -798,7 +820,7 @@ function buildStrictValidationTargets() {
 
 // 校验媒体域名是否命中独立媒体组选区。
 function buildMediaValidationTargets() {
-  return buildValidationTargets("DOMAIN-SUFFIX", CANARIES.media.domainSuffixes);
+  return buildValidationTargets("DOMAIN-SUFFIX", EXPECTED_ROUTES.toMedia.domains);
 }
 
 // 校验受管浏览器进程是否继续命中链式代理出口，每个受管 App 都校验主进程名。

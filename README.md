@@ -1,175 +1,175 @@
+# clash-override-chain-proxy
+
 ![封面图](img/封面图.png)
 
-# 解决 Clash 分流失控：让 ChatGPT / Claude 稳定走指定家宽出口
+> 你有没有遇到过这种情况：打开 ChatGPT 或 Claude，Cloudflare 验证页死活过不去，刷新一次、两次、十次，依然被拦在门外；或者某天登录时发现账号已经被封，申诉回来一句"违反使用条款"，没人告诉你到底是哪条规则、哪个 IP、哪次请求踩了线。问题的根子往往不在你这边，而在你用的机场 IP——那串地址已经被平台识别成共享代理，和你一起用它的陌生人早就把风控额度刷光了。
+>
+> 这份 Clash Party 覆写脚本做的事很直接：让 AI 流量（ChatGPT / Claude / Gemini / Perplexity 等）走你自己的家宽 IP 链式出口，平台每次看到的都是同一张干净的家用 IP 面孔；社交与流媒体走独立地区组，不占用家宽带宽。顺带把 DNS、Sniffer、分流规则三层接到同一套分类上，避免"规则写对了但 DNS 解析走岔、出口还是偏"的常见踩坑。
 
-凌晨两点，你打开 ChatGPT，风控页面跳出来；切到 Claude，Cloudflare 验证卡住；回头查机场，节点全绿、延迟正常。看着像机场掉链子，真翻日志才发现：`api.openai.com` 的 DNS 解析跑到了境内 DoH，出口 IP 根本不是你以为的那个地区。
+**当前版本：** v9.0
 
-这是 Clash 用户最熟悉的困扰——**表面能用，但出口经常不对**。
+## Features
 
-规则看着是对的，DNS 偷偷走岔；换了台机器，某个进程的可执行名变了，分流就静默失效；给 AI 流量接了家宽 IP，结果只有一半请求走上去，剩下一半仍然从机场 IP 出。登录异常、风控、速度波动，每一次都要重新排查"到底卡在哪层"。
+- **链式家宽出口** — AI 与开发支撑平台（ChatGPT / Claude / Gemini / Perplexity / Google / Microsoft / GitHub）按域名 + 进程名 + CLI 可执行名三层收口到 `chainRegion`。
+- **媒体独立选区** — 社交与流媒体（YouTube / Netflix / X / Telegram / Discord）走 `mediaRegion` 普通地区组，不占家宽链路。
+- **DIRECT 稳定保留** — 国内办公协作走境内 DoH；域外应用（Tailscale / Typeless）走 `DIRECT + 域外 DoH + skip-domain`；Tailscale CGNAT / IPv6 ULA 走 IP-CIDR。
+- **DNS / Sniffer / Rules 同一套分类** — 解决"规则对但 DNS 错"的根源问题。
 
-这个仓库就是为这一层问题做的：**让关键流量稳定命中你指定的家宽出口，不再"偶尔对、偶尔错"**。
+## Requirements
 
-如果你在这些症状里认出自己，继续往下看。
+- [Clash Party](https://github.com/clash-verge-rev/clash-verge-rev) 或兼容 JavaScriptCore 覆写的 Clash 客户端
+- 一份代理订阅（包含 US / JP / HK / SG 至少一个地区的节点）
+- 一份家宽 IP 服务（作为链式代理前置出口）
+- Node.js（仅用于跑 `tests/validate.js`，不用运行时依赖）
 
-> 当前主脚本版本：`v9.0`
+示例资源（可选）：代理订阅 [办公娱乐好帮手](https://xn--9kq10e0y7h.site/index.html?register=twb6RIec) · 家宽 IP [MiyaIP](https://www.miyaip.com/?invitecode=7670643)
 
-## 它做的事情
+## Usage
 
-简单说三类流量，三个去向：
+### Installation
 
-**AI 与开发相关**走 `chainRegion` 对应的链式家宽出口。ChatGPT、Claude、Gemini、Perplexity 的主站和 API，加上 Google、Microsoft、GitHub 这些登录和支撑平台，全部收口到一跳家宽 + 一跳机场节点的链式代理。受管的浏览器（Chrome / Dia / Atlas / SunBrowser）和 `claude` / `codex` 这些 CLI 进程也按进程名强制绑定到这条链路，避免 AI 站点从浏览器或 CLI 出去时走岔。
+1. 下载两份脚本：
+   - [`src/MiyaIP 凭证.js`](src/MiyaIP%20%E5%87%AD%E8%AF%81.js)
+   - [`src/家宽IP-链式代理.js`](src/%E5%AE%B6%E5%AE%BDIP-%E9%93%BE%E5%BC%8F%E4%BB%A3%E7%90%86.js)
 
-**社交与流媒体**走 `mediaRegion` 对应的普通地区组。YouTube、Netflix、X、Telegram、Discord 这类不需要家宽 IP，单独走一个干净的 url-test 组，不占家宽链路。
+2. 在 `MiyaIP 凭证.js` 里填入真实凭证：
 
-**域内与特定应用**固定 `DIRECT`。腾讯、阿里、字节、WPS 的办公协作走境内 DoH 直连；Tailscale、Typeless 这类域外应用也直连，但配套域外 DoH + skip-domain，避免境内 DNS 污染。还有网络地址本身的 IP-CIDR 直连。
+   ```javascript
+   function main(config) {
+     config._miya = {
+       username: "你的用户名",
+       password: "你的密码",
+       relay: { server: "12.34.56.78", port: 8022 },
+       transit: { server: "transit.example.com", port: 8001 }
+     };
+     return config;
+   }
+   ```
 
-脚本同时接管了 DNS `nameserver-policy`、Sniffer 的 `force-domain` / `skip-domain`、`fake-ip-filter` 白名单——**让这四层用同一套分类**，而不是规则对、DNS 错、Sniffer 又是另一套。这是"表面规则正确但出口不对"问题的根源。
+3. 在 Clash Party 按顺序导入覆写（顺序不能反，主脚本会读 `config._miya`）：
+   - `MiyaIP 凭证.js`
+   - `家宽IP-链式代理.js`
 
-## 分流一览
+   ![Clash Party 覆写页面](img/Clash%20Party%20覆写.jpg)
 
-### 1. `chainRegion`——最需要收紧的一组
+### Configuration
 
-目标明确：AI 相关的每一次请求，都必须从你指定的家宽 IP 出去。
-
-覆盖三层：**域名**（Claude / ChatGPT / Gemini / NotebookLM / Perplexity 主站和 API，加 Google / Microsoft / GitHub 登录与下载）、**进程名**（Claude.app / ChatGPT.app / Perplexity.app / Cursor 及各自的 Electron Helper）、**CLI 可执行名**（`claude` 统一覆盖 Claude Code CLI 与 URL Handler，因为两者共用同一份二进制；加上 `codex` 和 `gemini`）。
-
-受管浏览器之所以单独列一份，是因为 AI 站点大部分从浏览器访问。如果浏览器出去走的是机场 IP，域名级规则再严也拦不住——因为进程已经把握手完成了。
-
-### 2. `mediaRegion`——媒体独立选区
-
-媒体流量和 `chainRegion` 脱钩。单独切 `mediaRegion` 只影响 YouTube / Netflix / X / Facebook / Instagram / Telegram / Discord 这一类，不会动到 AI 出口。
-
-为什么分开：家宽 IP 通常速度不如机场节点，也没必要为看剧牺牲带宽。媒体走普通地区组既能拿到地区解锁又保留速度。
-
-### 3. `DIRECT`——必须稳的一组
-
-国内办公协作（腾讯、阿里、字节、WPS）走境内 DoH 直连——避免域外 DoH 把这些站点解析成远端 IP、反而变慢。Apple 走境内 DoH + fake-ip 绕过，因为 iCloud 推送对真实 IP 敏感。
-
-Tailscale、Typeless 这类域外应用走 `DIRECT + 域外 DoH + skip-domain`——它们不适合走链式代理（会破坏 P2P 打洞），也不能用境内 DoH（会被解析错），所以固定这一组合。
-
-网络地址层面，Tailscale 的 CGNAT 网段（`100.64.0.0/10`）、魔法 DNS（`100.100.100.100`）、IPv6 ULA（`fd7a:115c:a1e0::/48`）也走 IP-CIDR 直连。
-
-## 快速开始
-
-### 1. 准备代理和家宽资源
-
-两类资源：
-
-- 一个代理订阅
-- 一个家宽 IP 服务，用作链式出口
-
-已有自己的资源直接替换。示例：
-- 代理订阅示例：[办公娱乐好帮手](https://xn--9kq10e0y7h.site/index.html?register=twb6RIec)
-- 家宽资源示例：[MiyaIP](https://www.miyaip.com/?invitecode=7670643)
-
-### 2. 准备两份覆写脚本
-
-- [`MiyaIP 凭证.js`](src/MiyaIP%20%E5%87%AD%E8%AF%81.js)——向 `config._miya` 注入凭证。
-- [`家宽IP-链式代理.js`](src/%E5%AE%B6%E5%AE%BDIP-%E9%93%BE%E5%BC%8F%E4%BB%A3%E7%90%86.js)——生成链式节点、媒体组、分流规则。
-
-### 3. 填好凭证脚本
-
-新建 `MiyaIP 凭证.js`，把真实信息填进去：
-
-```javascript
-function main(config) {
-  config._miya = {
-    username: "你的用户名",
-    password: "你的密码",
-    relay: {
-      server: "12.34.56.78",
-      port: 8022
-    },
-    transit: {
-      server: "transit.example.com",
-      port: 8001
-    }
-  };
-  return config;
-}
-```
-
-### 4. 按顺序导入覆写
-
-在 `Clash Party` 里按这个顺序导入：
-
-1. `MiyaIP 凭证.js`
-2. `家宽IP-链式代理.js`
-
-顺序不能反——主脚本运行时会直接读 `config._miya`，凭证脚本排在后面会导致启动即报错。
-
-![Clash Party 覆写页面](img/Clash%20Party%20覆写.jpg)
-
-### 5. 按场景调整参数
-
-多数情况下只需要改这四个入口参数：
+主脚本顶部的 `USER_OPTIONS`：
 
 ```javascript
 var USER_OPTIONS = {
-  chainRegion: "SG",
-  mediaRegion: "US",
-  enableChainRegionBrowserProcessProxy: true,
-  enableChainRegionAiCliProcessProxy: true
+  chainRegion: "SG",                            // AI 家宽出口地区
+  mediaRegion: "US",                            // 媒体地区
+  routeBrowserToChain: true,   // 浏览器按进程名绑定 chainRegion
+  routeAiCliToChain: true      // AI CLI 按可执行名绑定 chainRegion
 };
 ```
 
-- ChatGPT 看起来在美国：`chainRegion: "US"`
-- Claude 看起来在日本：`chainRegion: "JP"`
-- 刷 Netflix 美区：`mediaRegion: "US"`
-- AI 用日本、媒体用美国：`chainRegion: "JP"`，`mediaRegion: "US"`
-- 不想让浏览器按进程名强制走 `chainRegion`：`enableChainRegionBrowserProcessProxy: false`
-- 不想让 AI CLI 按可执行名强制走 `chainRegion`：`enableChainRegionAiCliProcessProxy: false`
+| 场景 | 配置 |
+|---|---|
+| ChatGPT 看起来在美国 | `chainRegion: "US"` |
+| Claude 看起来在日本 | `chainRegion: "JP"` |
+| Netflix 美区 | `mediaRegion: "US"` |
+| AI 日本、媒体美国 | `chainRegion: "JP"`, `mediaRegion: "US"` |
+| 关闭浏览器进程绑定 | `routeBrowserToChain: false` |
+| 关闭 AI CLI 进程绑定 | `routeAiCliToChain: false` |
 
-### 6. 启用并确认结果
+支持地区：`US` · `JP` · `HK` · `SG`。
 
-启用两个覆写 → 切到机场配置 → 启动代理 → 确认规则模式 + TUN 模式已开。
+### Run
 
-默认配置下如果订阅里有 `节点选择` 组，你会看到：
+启用两个覆写 → 切到机场配置 → 启动代理 → **规则模式** + **TUN 模式**已开。
+
+脚本会自动在现有的 `代理组和节点` 组里注入两个组：
 
 - `🇸🇬|新加坡-链式代理.跳板`（当前 `chainRegion` 对应的跳板）
 - `🇺🇸|美国-媒体`（当前 `mediaRegion` 对应的媒体组）
 
-加上新生成的 `🇸🇬|新加坡-链式代理.家宽IP出口`（家宽出口组）。
-
-地区名不是写死的——改 `chainRegion: "HK"`、保持 `mediaRegion: "US"`，下次加载会自动变成 `🇭🇰|香港-链式代理-跳板` 和 `🇺🇸|美国-媒体`。
-
-日常使用时，在 `节点选择` 里手动选中当前地区对应的跳板组；媒体流量由规则直接命中 `-媒体` 组，不用手选。
+以及新建 `🇸🇬|新加坡-链式代理.家宽IP出口` 作为家宽出口组。地区名不是硬编码的，`chainRegion` / `mediaRegion` 改变后自动同步。
 
 ![Clash Party 代理组页面](img/Clash%20Party%20代理组.jpg)
 
-## 你是不是它的用户
+### FAQ
 
-**适合你，如果**——经常用域外 AI 服务、对代理稳定性敏感、已经在用 Clash 或 Clash Party、愿意导入两份脚本但不想手写规则。
+- **报错 "缺少 `config._miya`"** — 覆写导入顺序反了。`MiyaIP 凭证.js` 必须在主脚本前，并且填了真实凭证。
+- **报错 "未找到可用地区跳板 / 媒体节点"** — `chainRegion` / `mediaRegion` 在订阅中没命中任何节点。确认订阅包含该地区，并检查节点命名能否被地区正则识别（见 `BASE.regions`）。
 
-**不适合你，如果**——只想一键全局代理不关心地区、没有家宽 IP 资源也没打算租一个、不使用 Clash Party。
-
-## 本地校验
-
-改完规则之后，先跑一遍：
+## Testing
 
 ```bash
 node tests/validate.js
 ```
 
-## 常见问题
+测试用 `vm` 隔离加载脚本，覆盖默认配置、开关组合、缺失地区报错、幂等重跑、受管对象修复等 13 个用例。
 
-- **报错与启动**
+## Architecture
 
-	- **缺少 `config._miya`**——覆写导入顺序反了。`MiyaIP 凭证.js` 必须排在主脚本前面，且文件里已经写入真实凭证。
-	- **找不到可用地区跳板 / 媒体节点**——当前 `chainRegion` / `mediaRegion` 没有在订阅中命中任何节点。确认订阅包含该地区，并检查节点命名能否被地区正则识别（见 `BASE.regions`）。
+```mermaid
+flowchart LR
+  USER["USER_OPTIONS<br/>地区 · 开关"]
+  BASE["BASE<br/>运行期常量"]
+  SRC["SOURCE_*<br/>模式字面量"]
+  POL["POLICY<br/>策略表"]
+  DER["DERIVED<br/>派生视图"]
+  CFG[("Clash 配置")]
+  EXP["EXPECTED_ROUTES<br/>路由样本"]
+  VAL[["断言 + tests/validate.js"]]
 
-- **生成结果不符合预期**
+  SRC --> POL --> DER --> CFG
+  USER --> DER
+  BASE --> CFG
+  EXP --> VAL
+  DER -.-> VAL
+  CFG -.-> VAL
+```
 
-	- **`节点选择` 里没有 `-链式代理-跳板` 或 `-媒体` 组**——脚本只把当前地区对应的组同步到 *已存在的* `节点选择`；订阅里若无该组，脚本不会新建。
-	- **出口地区不对**——按顺序排查：凭证与中转端点 → 当前地区的家宽出口组、跳板组、媒体组是否生成 → dialer-proxy 绑定是否到位。偏差多在这几层。
+脚本分三层数据流：**输入 → 策略与派生 → 配置与校验**。完整定义见 [`src/家宽IP-链式代理.js`](src/%E5%AE%B6%E5%AE%BDIP-%E9%93%BE%E5%BC%8F%E4%BB%A3%E7%90%86.js) 文件头部。
 
-- **设计选择**
+### 输入层
 
-	- **为什么域外应用保留直连**——Tailscale、Typeless 这类本就不适合走家宽链式代理，但境内 DoH 解析它们不稳定，所以固定成 `DIRECT + 域外 DoH + skip-domain`。
+- **`USER_OPTIONS`** — 用户可调的地区选择和进程绑定开关。
+- **`BASE`** — 运行期常量：地区表、节点名、组名后缀、DoH 服务器、规则前缀。
+- **`SOURCE_*`** — 模式字面量，按路由意图拆成 10 个顶层常量（Apple / Chain 支撑平台 / Chain AI / Media / Direct 域内域外 / Sniffer 强制跳过 / Processes / NetworkRules）。
+- **`EXPECTED_ROUTES`** — 路由样本（`toChain` / `toMedia`），声明"这些具体域名和进程应该落到哪"。运行期校验与 `tests/validate.js` 的唯一期望来源。
 
-## 兼容性
+### 策略与派生
 
-- 运行环境：`Clash Party` 的 `JavaScriptCore`
-- 语法范围：`ES5`
-- 进程分流覆盖：当前只维护 `macOS` 常见命名
+- **`POLICY`** — 策略表。每条 pattern 同时声明 `route` / `dnsZone` / `sniffer` / `fakeIpBypass` / `fallbackFilter`。新增类别只加一行，下游 DNS / Sniffer / 规则 / 校验视图自动同步。
+- **`DERIVED`** — 从 POLICY 投影出的数据视图（`patterns` / `processNames` / `networkRules`），`build*` / `write*` 函数直接从这里读。
+
+### 配置与校验
+
+- **`main(config)`** — 主流程，原地改写传入的 config 对象并返回。
+- **`assertExpectedRoutesCoverage`** — 加载期断言，核对 `EXPECTED_ROUTES` 没脱离 `SOURCE_*`。
+- **`validateManagedRouting`** — 运行期断言，核对关键目标真落到预期出口。
+- **`tests/validate.js`** — 端到端测试，`vm` 隔离加载脚本跑 13 个用例。
+
+### 命名约定
+
+按动词前缀分类，一眼看出副作用：
+
+- **`build*`** — 纯函数，只返回值不改状态。
+- **`resolve*`** — 读取并计算（可能触发幂等写入作为副产物）。
+- **`write*`** — 写入 config。
+- **`assert*`** — 运行期断言，失败即抛错。
+
+## DNS 与 Sniffer
+
+分流规则只是决定流量走哪个出口。**DNS 解析走错地区、TLS 握手前域名没被嗅探出来**——规则再对，出口也会跑偏。脚本让 DNS、Sniffer、规则三层共享同一套分类。
+
+- **`nameserver-policy`（域名 → DoH 服务器）** — POLICY 里 `dnsZone: "overseas"` 的域名（Claude / ChatGPT / Gemini / Google / Microsoft / 媒体站 / Tailscale 等）绑到域外 DoH（Google / Cloudflare）；`dnsZone: "domestic"` 的（Apple / 腾讯 / 阿里 / 字节 / WPS / 国内 AI）绑到域内 DoH（AliDNS / DNSPod）。基础 `nameserver` / `fallback` 同样拆域内域外两组，`fallback-filter` 用 `geoip-code: CN` 把域内 IP 过滤掉。
+- **`fake-ip-filter`（绕过 fake-ip 的白名单）** — Apple 推送、iCloud、本地域名（`+.lan` / `+.local` / `+.localhost`）、NTP、连通性探测（`msftconnecttest`）、游戏主机（Xbox / PlayStation / Nintendo）、STUN（WebRTC）、家用路由器。这些对**真实 IP 敏感**，fake-ip 会让它们失联。
+- **`force-domain`（强制嗅探）** — AI 支撑平台、AI 服务本身、出口验证域都进 `sniff.force-domain`。纯 IP 或 QUIC 握手时没有明确域名线索，强制嗅探让它们仍能命中域名规则；否则会悄悄回落到 IP 规则或 `MATCH`，偏离链式出口。
+- **`skip-domain`(跳过嗅探)** — Apple 推送、本地域名、Tailscale / Typeless 等域外应用。这些**故意**保留原始 IP 语义，嗅探反而破坏（Tailscale P2P 打洞、Apple 推送的 SNI 假名）。
+
+四层配置都从 POLICY 的 `dnsZone` / `sniffer` / `fakeIpBypass` / `fallbackFilter` 字段投影——改一处，全同步。
+
+## Compatibility
+
+- **运行环境：** Clash Party 的 JavaScriptCore
+- **语法范围：** ES5（无箭头函数、解构、模板字符串、展开语法）
+- **进程分流：** 当前只维护 macOS 常见命名，其他平台需自行扩展
+
+## License
+
+MIT — 见 [LICENSE](LICENSE)。
