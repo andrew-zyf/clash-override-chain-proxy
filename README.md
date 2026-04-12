@@ -58,8 +58,8 @@
 
 ```javascript
 var USER_OPTIONS = {
-  chainRegion: "SG",                            // AI 家宽出口地区
-  mediaRegion: "US",                            // 媒体地区
+  chainRegion: "SG",           // AI 家宽出口地区
+  mediaRegion: "US",           // 媒体地区
   routeBrowserToChain: true,   // 浏览器按进程名绑定 chainRegion
   routeAiCliToChain: true      // AI CLI 按可执行名绑定 chainRegion
 };
